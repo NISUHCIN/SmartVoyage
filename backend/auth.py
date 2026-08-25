@@ -1,0 +1,357 @@
+﻿"""
+auth.py：用户认证与数据库持久化模块。
+
+核心功能：
+    用户注册（密码哈希存储）。
+    用户登录（验证密码，签发JWT）。
+    JWT 令牌校验。
+    会话和消息的数据库持久化（保存/加载对话历史）。
+"""
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
+import hashlib
+import hmac
+import json
+import time
+import uuid
+import os
+from typing import Optional, Tuple
+from datetime import datetime
+
+import mysql.connector
+
+from core.config import Config
+from core.create_logger import logger
+
+conf = Config()
+
+
+def get_db_connection():
+    """获取数据库连接"""
+    return mysql.connector.connect(
+        host=conf.host,
+        user=conf.user,
+        password=conf.password,
+        database=conf.database,
+        port=conf.db_port,
+        charset="utf8mb4"
+    )
+
+
+# ---------- 密码哈希 ----------
+
+def hash_password(password: str) -> str:
+    """使用 PBKDF2-HMAC-SHA256 哈希密码"""
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return salt.hex() + ':' + dk.hex()
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """验证密码"""
+    try:
+        salt_hex, hash_hex = stored_hash.split(':')
+        salt = bytes.fromhex(salt_hex)
+        stored_dk = bytes.fromhex(hash_hex)
+        dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+        return hmac.compare_digest(dk, stored_dk)
+    except Exception:
+        return False
+
+
+# ---------- JWT 令牌 ----------
+
+def _b64encode(data: bytes) -> str:
+    import base64
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+
+
+def _b64decode(s: str) -> bytes:
+    import base64
+    padding = 4 - len(s) % 4
+    if padding != 4:
+        s += '=' * padding
+    return base64.urlsafe_b64decode(s)
+
+
+def create_token(user_id: int, username: str) -> str:
+    """签发 JWT 令牌"""
+    header = _b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    payload_data = {
+        "user_id": user_id,
+        "username": username,
+        "exp": int(time.time()) + conf.jwt_expire_hours * 3600,
+        "iat": int(time.time())
+    }
+    payload = _b64encode(json.dumps(payload_data).encode())
+    signature = hmac.new(conf.jwt_secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
+    sig = _b64encode(signature)
+    return f"{header}.{payload}.{sig}"
+
+
+def verify_token(token: str) -> Optional[dict]:
+    """验证 JWT 令牌，返回 payload 或 None"""
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+        header, payload, sig = parts
+        expected_sig = _b64encode(
+            hmac.new(conf.jwt_secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        payload_data = json.loads(_b64decode(payload))
+        if payload_data.get("exp", 0) < time.time():
+            return None
+        return payload_data
+    except Exception:
+        return None
+
+
+# ---------- 用户管理 ----------
+
+def register_user(username: str, password: str, email: str = None, phone: str = None) -> Tuple[bool, str, Optional[dict]]:
+    """注册新用户"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+        if cursor.fetchone():
+            return False, "用户名已存在", None
+
+        password_hash = hash_password(password)
+        cursor.execute(
+            "INSERT INTO users (username, password_hash, email, phone) VALUES (%s, %s, %s, %s)",
+            (username, password_hash, email, phone)
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+
+        token = create_token(user_id, username)
+        return True, "注册成功", {"user_id": user_id, "username": username, "token": token}
+    except Exception as e:
+        logger.error(f"注册失败: {e}")
+        return False, f"注册失败: {str(e)}", None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def login_user(username: str, password: str) -> Tuple[bool, str, Optional[dict]]:
+    """用户登录"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+
+        if not user:
+            return False, "用户名或密码错误", None
+
+        if not verify_password(password, user['password_hash']):
+            return False, "用户名或密码错误", None
+
+        cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user['id'],))
+        conn.commit()
+
+        token = create_token(user['id'], user['username'])
+        return True, "登录成功", {
+            "user_id": user['id'],
+            "username": user['username'],
+            "nickname": user.get('nickname'),
+            "token": token
+        }
+    except Exception as e:
+        logger.error(f"登录失败: {e}")
+        return False, f"登录失败: {str(e)}", None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+# ---------- 会话持久化 ----------
+
+def create_session(user_id: int, title: str = "新对话") -> str:
+    """创建新的对话会话，返回 session_id"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        session_id = str(uuid.uuid4())
+        cursor.execute(
+            "INSERT INTO chat_sessions (session_id, user_id, title) VALUES (%s, %s, %s)",
+            (session_id, user_id, title)
+        )
+        conn.commit()
+        return session_id
+    except Exception as e:
+        logger.error(f"创建会话失败: {e}")
+        return None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def save_message(session_id: str, role: str, content: str, intent: str = None, agent_name: str = None):
+    """保存一条对话消息到数据库"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO chat_messages (session_id, role, content, intent, agent_name) VALUES (%s, %s, %s, %s, %s)",
+            (session_id, role, content, intent, agent_name)
+        )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"保存消息失败: {e}")
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def load_session_messages(session_id: str) -> list:
+    """加载会话的所有消息"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT role, content, intent, agent_name FROM chat_messages WHERE session_id = %s ORDER BY created_at",
+            (session_id,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"加载消息失败: {e}")
+        return []
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def list_user_sessions(user_id: int) -> list:
+    """列出用户的所有会话"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT session_id, title, created_at, updated_at FROM chat_sessions WHERE user_id = %s ORDER BY updated_at DESC",
+            (user_id,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"列出会话失败: {e}")
+        return []
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+# ---------- 订单管理 ----------
+
+def create_order(user_id: int, order_type: str, item_desc: str, quantity: int,
+                 unit_price: float, contact_name: str = None, contact_phone: str = None,
+                 item_id: int = None) -> Tuple[bool, str, Optional[dict]]:
+    """创建订单"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        order_no = str(uuid.uuid4())
+        total_price = unit_price * quantity
+
+        cursor.execute(
+            """INSERT INTO orders (order_no, user_id, order_type, item_id, item_desc, quantity,
+               unit_price, total_price, contact_name, contact_phone, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'confirmed')""",
+            (order_no, user_id, order_type, item_id, item_desc, quantity,
+             unit_price, total_price, contact_name, contact_phone)
+        )
+        conn.commit()
+
+        # 扣减库存
+        if item_id:
+            table_map = {
+                'train': 'train_tickets',
+                'flight': 'flight_tickets',
+                'concert': 'concert_tickets',
+                'hotel': 'hotel_rooms'
+            }
+            table = table_map.get(order_type)
+            if table:
+                col = 'remaining_seats' if table != 'hotel_rooms' else 'remaining_rooms'
+                cursor.execute(
+                    f"UPDATE {table} SET {col} = {col} - %s WHERE id = %s AND {col} >= %s",
+                    (quantity, item_id, quantity)
+                )
+                conn.commit()
+                if cursor.rowcount == 0:
+                    logger.warning(f"库存不足: {table} id={item_id}")
+
+        return True, "下单成功", {
+            "order_no": order_no,
+            "total_price": total_price,
+            "status": "confirmed"
+        }
+    except Exception as e:
+        logger.error(f"创建订单失败: {e}")
+        return False, f"下单失败: {str(e)}", None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def list_user_orders(user_id: int) -> list:
+    """列出用户的所有订单"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT * FROM orders WHERE user_id = %s ORDER BY created_at DESC",
+            (user_id,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"列出订单失败: {e}")
+        return []
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def cancel_order(order_no: str, user_id: int) -> Tuple[bool, str]:
+    """取消订单"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT * FROM orders WHERE order_no = %s AND user_id = %s",
+            (order_no, user_id)
+        )
+        order = cursor.fetchone()
+        if not order:
+            return False, "订单不存在"
+        if order['status'] != 'confirmed':
+            return False, f"订单状态为 {order['status']}，无法取消"
+
+        cursor.execute(
+            "UPDATE orders SET status = 'cancelled' WHERE order_no = %s",
+            (order_no,)
+        )
+        conn.commit()
+        return True, "订单已取消"
+    except Exception as e:
+        logger.error(f"取消订单失败: {e}")
+        return False, f"取消失败: {str(e)}"
+    finally:
+        if conn and conn.is_connected():
+            conn.close()

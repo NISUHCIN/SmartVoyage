@@ -1,0 +1,33 @@
+# Environment secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# MCP secrets (RollingGo key)
+.mcp.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+web/node_modules/
+web/dist/
+
+# IDE / OS
+.idea/
+vscode/
+.vscode/
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Archives
+*.rar
+*.zip

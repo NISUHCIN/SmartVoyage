@@ -1,0 +1,14 @@
+.env
+.env.*
+.mcp.json
+logs/
+*.log
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+.jbeval/
+node_modules/
+web/node_modules/
+web/dist/
+.git/

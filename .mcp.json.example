@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "RollingGo-Hotel": {
+      "type": "streamable-http",
+      "url": "https://mcp.rollinggo.cn/mcp",
+      "headers": {
+        "Authorization": "Bearer your-rollinggo-key"
+      }
+    },
+    "RollingGo-Flight": {
+      "type": "streamable-http",
+      "url": "https://mcp.rollinggo.cn/mcp/flight",
+      "headers": {
+        "Authorization": "Bearer your-rollinggo-key"
+      }
+    }
+  }
+}

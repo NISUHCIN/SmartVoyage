@@ -1,0 +1,164 @@
+﻿version: "3.8"
+
+services:
+  # ---------- 数据库 ----------
+  mysql:
+    image: mysql:8.0
+    container_name: smartvoyage-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-smartvoyage123}
+      MYSQL_DATABASE: ${DB_NAME:-travel_rag}
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/create_table.sql:/docker-entrypoint-initdb.d/01_create.sql
+      - ./sql/hotel_table.sql:/docker-entrypoint-initdb.d/02_hotel.sql
+      - ./sql/v2_tables.sql:/docker-entrypoint-initdb.d/03_v2_tables.sql
+      - ./sql/insert_data.sql:/docker-entrypoint-initdb.d/04_insert.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------- MCP 服务 ----------
+  mcp-ticket:
+    build: .
+    container_name: smartvoyage-mcp-ticket
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python mcp/mcp_ticket_server.py
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  mcp-weather:
+    build: .
+    container_name: smartvoyage-mcp-weather
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python mcp/mcp_weather_server.py
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  mcp-order:
+    build: .
+    container_name: smartvoyage-mcp-order
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python mcp/mcp_order_server.py
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  mcp-hotel:
+    build: .
+    container_name: smartvoyage-mcp-hotel
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python mcp/mcp_hotel_server.py
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ---------- A2A 服务 ----------
+  a2a-weather:
+    build: .
+    container_name: smartvoyage-a2a-weather
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python agents/weather_server.py
+    depends_on:
+      - mcp-weather
+
+  a2a-ticket:
+    build: .
+    container_name: smartvoyage-a2a-ticket
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python agents/ticket_server.py
+    depends_on:
+      - mcp-ticket
+
+  a2a-order:
+    build: .
+    container_name: smartvoyage-a2a-order
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python agents/order_server.py
+    depends_on:
+      - a2a-ticket
+      - mcp-order
+
+  a2a-hotel:
+    build: .
+    container_name: smartvoyage-a2a-hotel
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python agents/hotel_server.py
+    depends_on:
+      - mcp-hotel
+
+  a2a-itinerary:
+    build: .
+    container_name: smartvoyage-a2a-itinerary
+    restart: unless-stopped
+    env_file: .env
+    command: python agents/itinerary_server.py
+    depends_on:
+      - a2a-weather
+
+  # ---------- API 服务 ----------
+  api-server:
+    build: .
+    container_name: smartvoyage-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+    command: python backend/api_server.py
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ---------- 前端 ----------
+  frontend:
+    image: node:20-alpine
+    container_name: smartvoyage-frontend
+    restart: unless-stopped
+    working_dir: /app/web
+    volumes:
+      - ./web:/app/web
+    environment:
+      VITE_API_PROXY: http://api-server:8080
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api-server
+
+volumes:
+  mysql_data:
