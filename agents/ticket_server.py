@@ -25,6 +25,7 @@ from core.create_logger import logger
 from utils.mock_travel_provider import extract_route, format_train_rows, query_trains
 from utils.request_id import extract_request_id, strip_request_prefix
 from utils.streaming import chunk_text
+from utils.redact import redact_sensitive
 
 conf = Config()
 
@@ -158,7 +159,7 @@ class TicketQueryServer(A2AServer):
         conversation = content.get("text", "") if isinstance(content, dict) else ""
         request_id = extract_request_id(conversation)
         conversation = strip_request_prefix(conversation)
-        logger.info(f"[{request_id or '-'}] 票务查询请求: {conversation}")
+        logger.info(f"[{request_id or '-'}] 票务查询请求: {redact_sensitive(conversation)}")
 
         try:
             params = self.extract_params(conversation)

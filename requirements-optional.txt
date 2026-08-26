@@ -1,4 +1,4 @@
-# spider 爬虫脚本与可选工具依赖
+# 可选工具依赖：天气爬虫/定时任务等
 -r requirements.txt
 beautifulsoup4==4.13.4
 lxml==6.0.0

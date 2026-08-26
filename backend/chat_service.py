@@ -25,6 +25,7 @@ from core.config import Config
 from core.create_logger import logger
 from core.main_prompts import SmartVoyagePrompts
 from backend.auth import load_session_messages, save_message, session_exists
+from utils.redact import redact_sensitive
 
 
 _service_conf = Config()
@@ -197,7 +198,7 @@ class SmartVoyageChatService:
         session_id = session_id or "default"
         intent_hint = ""
         agent_hint = ""
-        logger.info(f"[{request_id}] 会话 {session_id} 收到消息: {user_input[:60]}")
+        logger.info(f"[{request_id}] 会话 {session_id} 收到消息: {redact_sensitive(user_input[:60])}")
 
         persist = bool(user_id) or session_exists(session_id)
         history = _db_history_text(session_id) if persist else self._session_history.get(session_id, "")

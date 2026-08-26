@@ -25,6 +25,8 @@ import uuid
 import httpx
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -58,6 +60,22 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"code": exc.status_code, "message": str(exc.detail), "detail": exc.detail},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"code": 422, "message": "参数校验失败", "detail": jsonable_encoder(exc.errors())},
+    )
 
 
 @app.middleware("http")
