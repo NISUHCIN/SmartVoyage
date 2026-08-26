@@ -2,18 +2,14 @@
 .SYNOPSIS
     SmartVoyage 一键启动脚本
 .DESCRIPTION
-    按依赖顺序启动 3 个 MCP 服务 + 3 个 A2A 服务，然后启动前端。
+    按依赖顺序启动 MCP 服务与 A2A 服务（后端）。
     每个服务在独立的后台窗口中运行，方便排查问题。
-.PARAMETER Frontend
-    启动前端界面（Streamlit），默认启动
 .PARAMETER MCPOrder
     是否启动订票 MCP（需要数据库），默认启动
 .EXAMPLE
-    .\start.ps1              # 启动全部
-    .\start.ps1 -Frontend $false  # 只启动后端服务
+    .\start.ps1              # 启动全部后端服务
 #>
 param(
-    [bool]$Frontend = $true,
     [bool]$MCPOrder = $true
 )
 
@@ -41,21 +37,39 @@ if (-not (Test-Path ".env")) {
     exit 1
 }
 
+# 从 .env 读取端口配置，脚本内支持覆盖默认值
+$EnvVars = @{}
+if (Test-Path ".env") {
+    Get-Content ".env" | ForEach-Object {
+        if ($_ -match '^\s*([A-Z0-9_]+)=(.*)$') {
+            $EnvVars[$matches[1]] = $matches[2].Trim('"')
+        }
+    }
+}
+
+function Get-Port([string]$Key, [int]$Default) {
+    if ($EnvVars.ContainsKey($Key)) {
+        $parsed = 0
+        if ([int]::TryParse($EnvVars[$Key], [ref]$parsed)) { return $parsed }
+    }
+    return $Default
+}
+
 # 服务定义：名称、脚本路径、端口、启动延迟（秒）
 $Services = @(
-    @{ Name = "MCP-票务查询";  Script = "mcp\mcp_ticket_server.py";  Port = 8001; Delay = 3 },
-    @{ Name = "MCP-天气查询";  Script = "mcp\mcp_weather_server.py"; Port = 8002; Delay = 3 },
-    @{ Name = "MCP-酒店查询";  Script = "mcp\mcp_hotel_server.py";  Port = 8004; Delay = 3 }
+    @{ Name = "MCP-票务查询";  Script = "mcp_servers\mcp_ticket_server.py";  Port = Get-Port 'MCP_TICKET_PORT' 8001; Delay = 3 },
+    @{ Name = "MCP-天气查询";  Script = "mcp_servers\mcp_weather_server.py"; Port = Get-Port 'MCP_WEATHER_PORT' 8002; Delay = 3 },
+    @{ Name = "MCP-酒店查询";  Script = "mcp_servers\mcp_hotel_server.py";  Port = Get-Port 'MCP_HOTEL_PORT' 8004; Delay = 3 }
 )
 if ($MCPOrder) {
-    $Services += @{ Name = "MCP-票务预定"; Script = "mcp\mcp_order_server.py"; Port = 8003; Delay = 3 }
+    $Services += @{ Name = "MCP-票务预定"; Script = "mcp_servers\mcp_order_server.py"; Port = Get-Port 'MCP_ORDER_PORT' 8003; Delay = 3 }
 }
 $Services += @(
-    @{ Name = "A2A-天气Agent"; Script = "agents\weather_server.py"; Port = 5005; Delay = 3 },
-    @{ Name = "A2A-票务Agent"; Script = "agents\ticket_server.py"; Port = 5006; Delay = 3 },
-    @{ Name = "A2A-订票Agent"; Script = "agents\order_server.py";  Port = 5007; Delay = 3 },
-    @{ Name = "A2A-酒店Agent"; Script = "agents\hotel_server.py";   Port = 5008; Delay = 3 },
-    @{ Name = "A2A-行程Agent"; Script = "agents\itinerary_server.py"; Port = 5009; Delay = 3 }
+    @{ Name = "A2A-天气Agent"; Script = "agents\weather_server.py"; Port = Get-Port 'A2A_WEATHER_PORT' 5005; Delay = 3 },
+    @{ Name = "A2A-票务Agent"; Script = "agents\ticket_server.py"; Port = Get-Port 'A2A_TICKET_PORT' 5006; Delay = 3 },
+    @{ Name = "A2A-订票Agent"; Script = "agents\order_server.py";  Port = Get-Port 'A2A_ORDER_PORT' 5007; Delay = 3 },
+    @{ Name = "A2A-酒店Agent"; Script = "agents\hotel_server.py";   Port = Get-Port 'A2A_HOTEL_PORT' 5008; Delay = 3 },
+    @{ Name = "A2A-行程Agent"; Script = "agents\itinerary_server.py"; Port = Get-Port 'A2A_ITINERARY_PORT' 5009; Delay = 3 }
 )
 
 # 等待端口就绪
@@ -101,14 +115,6 @@ Write-Host ""
 Write-Host "所有后端服务已启动。" -ForegroundColor Green
 Write-Host ""
 
-# 启动前端
-if ($Frontend) {
-    Write-Host "[启动] Streamlit 前端 (端口 8501)..." -ForegroundColor White
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$ProjectRoot'; streamlit run legacy\app.py" -WindowStyle Normal
-    Write-Host ""
-    Write-Host "前端已启动，浏览器访问: http://localhost:8501" -ForegroundColor Cyan
-}
-
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  服务状态总览" -ForegroundColor Cyan
@@ -122,7 +128,6 @@ Write-Host "  A2A 票务Agent: http://127.0.0.1:5006"
 Write-Host "  A2A 订票Agent: http://127.0.0.1:5007"
 Write-Host "  A2A 酒店Agent: http://127.0.0.1:5008"
 Write-Host "  A2A 行程Agent: http://127.0.0.1:5009"
-if ($Frontend) { Write-Host "  前端界面:      http://localhost:8501" }
 Write-Host ""
 Write-Host "停止所有服务请运行: .\stop.ps1" -ForegroundColor Yellow
 Write-Host ""

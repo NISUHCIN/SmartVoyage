@@ -43,21 +43,39 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# 从 .env 读取端口配置，脚本内支持覆盖默认值
+$EnvVars = @{}
+if (Test-Path ".env") {
+    Get-Content ".env" | ForEach-Object {
+        if ($_ -match '^\s*([A-Z0-9_]+)=(.*)$') {
+            $EnvVars[$matches[1]] = $matches[2].Trim('"')
+        }
+    }
+}
+
+function Get-Port([string]$Key, [int]$Default) {
+    if ($EnvVars.ContainsKey($Key)) {
+        $parsed = 0
+        if ([int]::TryParse($EnvVars[$Key], [ref]$parsed)) { return $parsed }
+    }
+    return $Default
+}
+
 # 服务定义：名称、脚本路径、端口、启动延迟（秒）
 $Services = @(
-    @{ Name = "MCP-票务查询";  Script = "mcp\mcp_ticket_server.py";  Port = 8001; Delay = 3 },
-    @{ Name = "MCP-天气查询";  Script = "mcp\mcp_weather_server.py"; Port = 8002; Delay = 3 },
-    @{ Name = "MCP-酒店查询";  Script = "mcp\mcp_hotel_server.py";  Port = 8004; Delay = 3 }
+    @{ Name = "MCP-票务查询";  Script = "mcp_servers\mcp_ticket_server.py";  Port = Get-Port 'MCP_TICKET_PORT' 8001; Delay = 3 },
+    @{ Name = "MCP-天气查询";  Script = "mcp_servers\mcp_weather_server.py"; Port = Get-Port 'MCP_WEATHER_PORT' 8002; Delay = 3 },
+    @{ Name = "MCP-酒店查询";  Script = "mcp_servers\mcp_hotel_server.py";  Port = Get-Port 'MCP_HOTEL_PORT' 8004; Delay = 3 }
 )
 if ($MCPOrder) {
-    $Services += @{ Name = "MCP-票务预定"; Script = "mcp\mcp_order_server.py"; Port = 8003; Delay = 3 }
+    $Services += @{ Name = "MCP-票务预定"; Script = "mcp_servers\mcp_order_server.py"; Port = Get-Port 'MCP_ORDER_PORT' 8003; Delay = 3 }
 }
 $Services += @(
-    @{ Name = "A2A-天气Agent"; Script = "agents\weather_server.py"; Port = 5005; Delay = 3 },
-    @{ Name = "A2A-票务Agent"; Script = "agents\ticket_server.py"; Port = 5006; Delay = 3 },
-    @{ Name = "A2A-订票Agent"; Script = "agents\order_server.py";  Port = 5007; Delay = 3 },
-    @{ Name = "A2A-酒店Agent"; Script = "agents\hotel_server.py";   Port = 5008; Delay = 3 },
-    @{ Name = "A2A-行程Agent"; Script = "agents\itinerary_server.py"; Port = 5009; Delay = 3 },
+    @{ Name = "A2A-天气Agent"; Script = "agents\weather_server.py"; Port = Get-Port 'A2A_WEATHER_PORT' 5005; Delay = 3 },
+    @{ Name = "A2A-票务Agent"; Script = "agents\ticket_server.py"; Port = Get-Port 'A2A_TICKET_PORT' 5006; Delay = 3 },
+    @{ Name = "A2A-订票Agent"; Script = "agents\order_server.py";  Port = Get-Port 'A2A_ORDER_PORT' 5007; Delay = 3 },
+    @{ Name = "A2A-酒店Agent"; Script = "agents\hotel_server.py";   Port = Get-Port 'A2A_HOTEL_PORT' 5008; Delay = 3 },
+    @{ Name = "A2A-行程Agent"; Script = "agents\itinerary_server.py"; Port = Get-Port 'A2A_ITINERARY_PORT' 5009; Delay = 3 },
     @{ Name = "API接口服务";   Script = "backend\api_server.py";                 Port = 8080; Delay = 3 }
 )
 

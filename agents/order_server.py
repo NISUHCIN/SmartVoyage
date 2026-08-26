@@ -29,6 +29,8 @@ from python_a2a import AgentCard, AgentSkill, run_server, TaskStatus, TaskState,
 from core.create_logger import logger
 from core.config import Config
 from utils.mock_travel_provider import create_ticket_order, extract_route
+from utils.request_id import extract_request_id, strip_request_prefix
+from utils.streaming import chunk_text
 
 conf = Config()
 
@@ -45,7 +47,9 @@ llm = ChatOpenAI(
 async def order_tickets(query: Any) -> Any:
     try:
         # 启动 MCP server，通过streamable建立连接
-        async with streamablehttp_client("http://127.0.0.1:8003/mcp") as (read, write, _):
+        rid = extract_request_id(str(query))
+        headers = {"X-Request-ID": rid} if rid else None
+        async with streamablehttp_client(conf.mcp_order_url, headers=headers) as (read, write, _):
             # 使用读写通道创建 MCP 会话
             async with ClientSession(read, write) as session:
                 try:
@@ -83,7 +87,7 @@ async def order_tickets(query: Any) -> Any:
 agent_card = AgentCard(
     name="TicketOrderAssistant",
     description="通过MCP提供票务预定服务的助手",
-    url="http://localhost:5007",
+    url=conf.a2a_order_url,
     version="1.0.4",
     capabilities={"streaming": True, "memory": True},
     skills=[
@@ -101,7 +105,25 @@ class TicketOrderServer(A2AServer):
     def __init__(self) -> None:
         super().__init__(agent_card=agent_card)
         self.llm = llm
-        self.ticket_client = A2AClient("http://localhost:5006", timeout=90)
+        self.ticket_client = A2AClient(conf.a2a_ticket_url, timeout=90)
+
+    async def stream_response(self, message: Any) -> Any:
+        """A2A 流式响应：复用 handle_task，分块返回文本。"""
+        msg = message if isinstance(message, Message) else Message.from_dict(message)
+        task = Task(id="stream-" + str(uuid.uuid4().hex), message=msg.to_dict())
+        result = await asyncio.to_thread(self.handle_task, task)
+        text = ""
+        try:
+            if result.artifacts:
+                artifact = result.artifacts[0]
+                parts = artifact["parts"] if isinstance(artifact, dict) else artifact.parts
+                if parts:
+                    part = parts[0]
+                    text = part["text"] if isinstance(part, dict) else part.text
+        except Exception:
+            text = ""
+        for piece in chunk_text(text or "暂不可用"):
+            yield piece
 
     # 处理任务：提取输入，查询余票，调用MCP，结果输出
     def handle_task(self, task: Any) -> Any:
@@ -109,7 +131,9 @@ class TicketOrderServer(A2AServer):
         content = (task.message or {}).get("content", {})  # 从消息中获取内容
         # 提取conversation，即客户端发起的任务中的query语句
         conversation = content.get("text", "") if isinstance(content, dict) else ""
-        logger.info(f"对话历史及用户问题: {conversation}")
+        request_id = extract_request_id(conversation)
+        conversation = strip_request_prefix(conversation)
+        logger.info(f"[{request_id or '-'}] 对话历史及用户问题: {conversation}")
 
         if "机票" in conversation or "飞机" in conversation:
             task.artifacts = [{"parts": [{"type": "text", "text": "当前版本仅支持火车/高铁票预订，暂不支持机票预订。"}]}]
@@ -122,7 +146,11 @@ class TicketOrderServer(A2AServer):
             task_ticket = Task(id="task-" + str(uuid.uuid4()), message=message_ticket.to_dict())
 
             # 发送任务并获取最终结果
-            ticket_result_task = asyncio.run(self.ticket_client.send_task_async(task_ticket))
+            ticket_client = A2AClient(
+                conf.a2a_ticket_url, timeout=90,
+                headers={"X-Request-ID": request_id} if request_id else None
+            )
+            ticket_result_task = asyncio.run(ticket_client.send_task_async(task_ticket))
             logger.info(f"原始响应: {ticket_result_task}")
 
             # 处理结果：未查到余票信息时，则返回提示信息
@@ -180,4 +208,4 @@ if __name__ == "__main__":
     for skill in ticket_server.agent_card.skills:
         logger.info(f"- {skill.name}: {skill.description}")
     # 运行服务器
-    run_server(ticket_server, host="127.0.0.1", port=5007)
+    run_server(ticket_server, host="127.0.0.1", port=conf.a2a_order_port)

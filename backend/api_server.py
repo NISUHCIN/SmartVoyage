@@ -16,23 +16,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import asyncio
+import json
 import os
 import threading
 import time
 import uuid
 
+import httpx
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from core.create_logger import logger
 from backend.auth import (
     register_user, login_user, verify_token,
     create_session, load_session_messages,
-    list_user_sessions, list_user_orders, cancel_order
+    list_user_sessions, list_user_orders, cancel_order, session_belongs_to_user,
+    session_exists
 )
 from backend.chat_service import AGENT_URLS, SmartVoyageChatService
+from core.config import Config
 from python_a2a import A2AClient, Message, TextContent, MessageRole, Task
 from utils.china_cities import PROVINCE_CITIES
 
@@ -43,7 +48,22 @@ app.add_middleware(
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    request.state.request_id = request_id
+    start = time.time()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        f"{request.method} {request.url.path} -> {response.status_code} "
+        f"({time.time() - start:.2f}s) rid={request_id}"
+    )
+    return response
 
 
 _chat_service = None
@@ -87,17 +107,62 @@ class AgentRequest(BaseModel):
     message: str
 
 
+_conf = Config()
+
+if _conf.jwt_secret == "smartvoyage-dev-secret-change-in-production":
+    logger.warning("JWT_SECRET 仍为默认开发密钥，生产环境请务必覆盖。")
+
+_rate_lock = threading.Lock()
+_rate_attempts: dict[str, list[float]] = {}
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = 20
+REDIS_URL = os.getenv("REDIS_URL", "")
+
+
+def _in_memory_rate_limit(client_ip: str) -> bool:
+    now = time.time()
+    with _rate_lock:
+        stamps = [s for s in _rate_attempts.get(client_ip, []) if now - s < RATE_LIMIT_WINDOW]
+        if len(stamps) >= RATE_LIMIT_MAX:
+            return False
+        stamps.append(now)
+        _rate_attempts[client_ip] = stamps
+        return True
+
+
+def _check_rate_limit(client_ip: str) -> bool:
+    """限流：配置 REDIS_URL 时使用 Redis 共享计数，否则退回进程内计数。"""
+    if not REDIS_URL:
+        return _in_memory_rate_limit(client_ip)
+    try:
+        import redis
+        client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        key = f"smartvoyage:rate:{client_ip}"
+        now = int(time.time())
+        pipe = client.pipeline()
+        pipe.zremrangebyscore(key, 0, now - RATE_LIMIT_WINDOW)
+        pipe.zcard(key)
+        count = pipe.execute()[1]
+        if count >= RATE_LIMIT_MAX:
+            return False
+        pipe.zadd(key, {f"{now}-{uuid.uuid4().hex}": now})
+        pipe.expire(key, RATE_LIMIT_WINDOW)
+        pipe.execute()
+        return True
+    except Exception:
+        return _in_memory_rate_limit(client_ip)
+
 AGENT_DIRECT_URLS = {
-    "weather": "http://localhost:5005",
-    "ticket": "http://localhost:5006",
-    "ticket-order": "http://localhost:5007",
-    "hotel": "http://localhost:5008",
-    "itinerary": "http://localhost:5009",
+    "weather": _conf.a2a_weather_url,
+    "ticket": _conf.a2a_ticket_url,
+    "ticket-order": _conf.a2a_order_url,
+    "hotel": _conf.a2a_hotel_url,
+    "itinerary": _conf.a2a_itinerary_url,
 }
 
 _agent_clients: dict[str, A2AClient] = {}
 _agent_clients_lock = threading.Lock()
-_direct_cache: dict[tuple[str, str], tuple[float, str]] = {}
+_direct_cache: dict[tuple[str, str], tuple[float, str, object]] = {}
 _direct_cache_lock = threading.Lock()
 DIRECT_CACHE_TTL = int(os.getenv("DIRECT_CACHE_TTL_SECONDS", "10800"))
 
@@ -111,24 +176,36 @@ def _get_agent_client(endpoint: str) -> A2AClient:
         return client
 
 
-async def call_agent_direct(endpoint: str, message: str) -> str:
+async def call_agent_direct(endpoint: str, message: str, request_id: str = "",
+                            cacheable: bool = True) -> tuple[str, object]:
     key = (endpoint, message)
-    with _direct_cache_lock:
-        cached = _direct_cache.get(key)
-        if cached and time.time() - cached[0] < DIRECT_CACHE_TTL:
-            return cached[1]
+    if cacheable:
+        with _direct_cache_lock:
+            cached = _direct_cache.get(key)
+            if cached and time.time() - cached[0] < DIRECT_CACHE_TTL:
+                return cached[1], cached[2]
 
     client = _get_agent_client(endpoint)
+    if request_id:
+        client = A2AClient(endpoint, timeout=90, headers={"X-Request-ID": request_id})
     task = Task(
         id="api-" + uuid.uuid4().hex,
         message=Message(content=TextContent(text=message), role=MessageRole.USER).to_dict(),
     )
     result = await client.send_task_async(task)
-    if result.status.state == "completed" and result.artifacts:
+    structured = None
+    state = result.status.state
+    if state == "completed" and result.artifacts:
         artifact = result.artifacts[0]
         parts = artifact["parts"] if isinstance(artifact, dict) else artifact.parts
         part = parts[0]
         reply = part["text"] if isinstance(part, dict) else part.text
+        if len(parts) > 1:
+            try:
+                second = parts[1]
+                structured = json.loads(second["text"] if isinstance(second, dict) else second.text)
+            except Exception:
+                structured = None
     else:
         msg = result.status.message
         if isinstance(msg, dict) and "content" in msg:
@@ -137,24 +214,42 @@ async def call_agent_direct(endpoint: str, message: str) -> str:
         else:
             reply = "未返回可展示的结果"
 
-    with _direct_cache_lock:
-        _direct_cache[key] = (time.time(), reply)
-    return reply
+    if cacheable and state == "completed" and reply and reply.strip():
+        with _direct_cache_lock:
+            _direct_cache[key] = (time.time(), reply, structured)
+            if len(_direct_cache) > 500:
+                expired = [k for k, v in _direct_cache.items() if time.time() - v[0] >= DIRECT_CACHE_TTL]
+                for k in expired:
+                    del _direct_cache[k]
+    return reply, structured
 
 
-def auth_required(authorization: Optional[str] = Header(None)) -> int:
+def auth_required(request: Request, authorization: Optional[str] = Header(None)) -> int:
     """从请求头提取并验证 JWT，返回 user_id"""
-    if not authorization or not authorization.startswith("Bearer "):
+    token = request.cookies.get("sv_token")
+    if not token and authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+    if not token:
         raise HTTPException(401, "未提供认证令牌")
-    token = authorization.split(" ", 1)[1]
     payload = verify_token(token)
     if not payload:
         raise HTTPException(401, "认证令牌无效或已过期")
     return payload["user_id"]
 
 
+def _set_auth_cookie(response: JSONResponse, token: str) -> None:
+    response.set_cookie(
+        "sv_token", token,
+        httponly=True, samesite="lax", path="/",
+        max_age=_conf.jwt_expire_hours * 3600
+    )
+
+
 @app.post("/api/register")
-async def register(req: RegisterRequest):
+async def register(req: RegisterRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(429, "请求过于频繁，请稍后再试")
     if len(req.username) < 3:
         raise HTTPException(400, "用户名至少3个字符")
     if len(req.password) < 6:
@@ -162,15 +257,42 @@ async def register(req: RegisterRequest):
     success, msg, data = register_user(req.username, req.password, req.email, req.phone)
     if not success:
         raise HTTPException(400, msg)
-    return {"code": 0, "message": msg, "data": data}
+    response = JSONResponse({"code": 0, "message": msg, "data": data})
+    if data and data.get("token"):
+        _set_auth_cookie(response, data["token"])
+    return response
 
 
 @app.post("/api/login")
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(429, "请求过于频繁，请稍后再试")
     success, msg, data = login_user(req.username, req.password)
     if not success:
         raise HTTPException(401, msg)
-    return {"code": 0, "message": msg, "data": data}
+    response = JSONResponse({"code": 0, "message": msg, "data": data})
+    if data and data.get("token"):
+        _set_auth_cookie(response, data["token"])
+    return response
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    payload = _current_user(request)
+    if not payload:
+        raise HTTPException(401, "未登录")
+    return {"code": 0, "data": {
+        "user_id": payload["user_id"],
+        "username": payload.get("username", ""),
+    }}
+
+
+@app.post("/api/logout")
+async def logout():
+    response = JSONResponse({"code": 0, "message": "已退出登录"})
+    response.delete_cookie("sv_token", path="/")
+    return response
 
 
 @app.get("/api/sessions")
@@ -215,56 +337,150 @@ async def cities():
     return {"code": 0, "data": data}
 
 
+def _resolve_chat_session(session_id: Optional[str], user_id: Optional[int]) -> str:
+    session_id = session_id or "default"
+    if user_id:
+        if session_id == "default" or not session_belongs_to_user(session_id, user_id):
+            created = create_session(user_id, "新对话")
+            if created:
+                session_id = created
+    elif session_id == "default" or not session_exists(session_id):
+        created = create_session(
+            None, "新对话", session_id=None if session_id == "default" else session_id
+        )
+        if created:
+            session_id = created
+    return session_id
+
+
+def _current_user(request: Request) -> Optional[dict]:
+    token = request.cookies.get("sv_token")
+    if not token:
+        authorization = request.headers.get("Authorization", "")
+        if authorization.startswith("Bearer "):
+            token = authorization.split(" ", 1)[1]
+    if token:
+        return verify_token(token)
+    return None
+
+
+def _chat_user_id(request: Request) -> Optional[int]:
+    payload = _current_user(request)
+    return payload["user_id"] if payload else None
+
+
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request, authorization: Optional[str] = Header(None)):
     if not req.message.strip():
         raise HTTPException(400, "消息不能为空")
-    session_id = req.session_id or "default"
+    user_id = _chat_user_id(request)
+    session_id = _resolve_chat_session(req.session_id, user_id)
+
     service = get_chat_service()
-    reply = await asyncio.to_thread(service.process, req.message.strip(), session_id)
+    reply = await asyncio.to_thread(
+        service.process, req.message.strip(), session_id, user_id,
+        request_id=request.state.request_id
+    )
     return {"code": 0, "data": {"reply": reply, "session_id": session_id}}
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest, request: Request,
+                      authorization: Optional[str] = Header(None)):
+    if not req.message.strip():
+        raise HTTPException(400, "消息不能为空")
+    user_id = _chat_user_id(request)
+    session_id = _resolve_chat_session(req.session_id, user_id)
+    service = get_chat_service()
+
+    async def event_source():
+        async for event in service.stream_process(
+            req.message.strip(), session_id, user_id,
+            request_id=request.state.request_id
+        ):
+            payload = {"session_id": session_id, **event}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Request-ID": request.state.request_id,
+        },
+    )
 
 
 @app.get("/api/agents")
 async def agents():
-    data = [
-        {"name": name, "url": url, "status": "online"}
-        for name, url in AGENT_URLS.items()
-    ]
+    async def probe(name: str, url: str) -> dict:
+        online = await _agent_is_online(url)
+        return {"name": name, "url": url, "status": "online" if online else "offline"}
+
+    data = await asyncio.gather(
+        *(probe(name, url) for name, url in AGENT_URLS.items())
+    )
     return {"code": 0, "data": data}
 
 
+async def _agent_is_online(url: str) -> bool:
+    """通过 A2A 的 /agent.json 端点探测 Agent 是否存活。"""
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"{url}/agent.json")
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
 @app.post("/api/weather")
-async def weather(req: AgentRequest):
-    reply = await call_agent_direct(AGENT_DIRECT_URLS["weather"], req.message)
-    return {"code": 0, "data": {"reply": reply}}
+async def weather(req: AgentRequest, request: Request):
+    reply, data = await call_agent_direct(
+        AGENT_DIRECT_URLS["weather"], req.message, request_id=request.state.request_id
+    )
+    return {"code": 0, "data": {"reply": reply, "data": data}}
 
 
 @app.post("/api/ticket")
-async def ticket(req: AgentRequest):
-    reply = await call_agent_direct(AGENT_DIRECT_URLS["ticket"], req.message)
-    return {"code": 0, "data": {"reply": reply}}
+async def ticket(req: AgentRequest, request: Request):
+    reply, data = await call_agent_direct(
+        AGENT_DIRECT_URLS["ticket"], req.message, request_id=request.state.request_id
+    )
+    return {"code": 0, "data": {"reply": reply, "data": data}}
 
 
 @app.post("/api/ticket-order")
-async def ticket_order(req: AgentRequest):
-    reply = await call_agent_direct(AGENT_DIRECT_URLS["ticket-order"], req.message)
-    return {"code": 0, "data": {"reply": reply}}
+async def ticket_order(req: AgentRequest, request: Request, authorization: Optional[str] = Header(None)):
+    message = req.message
+    payload = _current_user(request)
+    if payload:
+        message = f"{message}\n用户ID: {payload['user_id']}"
+    # 下单是写操作，不能复用查询缓存，否则重复下单/取消后重订会拿到旧结果。
+    reply, data = await call_agent_direct(
+        AGENT_DIRECT_URLS["ticket-order"], message,
+        request_id=request.state.request_id, cacheable=False
+    )
+    return {"code": 0, "data": {"reply": reply, "data": data}}
 
 
 @app.post("/api/hotel")
-async def hotel(req: AgentRequest):
-    reply = await call_agent_direct(AGENT_DIRECT_URLS["hotel"], req.message)
-    return {"code": 0, "data": {"reply": reply}}
+async def hotel(req: AgentRequest, request: Request):
+    reply, data = await call_agent_direct(
+        AGENT_DIRECT_URLS["hotel"], req.message, request_id=request.state.request_id
+    )
+    return {"code": 0, "data": {"reply": reply, "data": data}}
 
 
 @app.post("/api/itinerary")
-async def itinerary(req: AgentRequest):
-    reply = await call_agent_direct(AGENT_DIRECT_URLS["itinerary"], req.message)
-    return {"code": 0, "data": {"reply": reply}}
+async def itinerary(req: AgentRequest, request: Request):
+    reply, data = await call_agent_direct(
+        AGENT_DIRECT_URLS["itinerary"], req.message, request_id=request.state.request_id
+    )
+    return {"code": 0, "data": {"reply": reply, "data": data}}
 
 
-_WEB_DIST = Path(__file__).parent / "web" / "dist"
+_WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
 if _WEB_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_WEB_DIST), html=True), name="web")
 

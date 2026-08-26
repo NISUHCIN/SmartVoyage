@@ -17,7 +17,7 @@ SmartVoyage 是一个基于 A2A + MCP + LangChain 的旅行智能助手，提供
 - Python 3.11+（推荐 `lang_env` 环境）
 - FastAPI：REST API（`backend/`）
 - python-a2a：A2A Agent 协议（`agents/`）
-- MCP：工具服务（`mcp/`）
+- MCP：工具服务（`mcp_servers/`）
 - LangChain + 阿里云 DashScope：意图识别、SQL 生成、行程正文生成
 - Vue3 + Vite：前端（`web/`）
 - MySQL：演示数据（车票、订单、天气兜底）
@@ -60,7 +60,7 @@ SmartVoyage/
 │   ├── order_server.py       # 订票（5007）
 │   ├── hotel_server.py       # 酒店查询（5008）
 │   └── itinerary_server.py   # 行程编排（5009）
-├── mcp/                      # MCP 服务
+├── mcp_servers/              # MCP 服务
 │   ├── mcp_weather_server.py # 8002
 │   ├── mcp_ticket_server.py  # 8001
 │   ├── mcp_order_server.py   # 8003
@@ -74,7 +74,6 @@ SmartVoyage/
 │       └── views/            # 天气/票务/酒店/行程/对话页面
 ├── tests/                    # 测试
 ├── scripts/                  # 启动/停止脚本
-├── legacy/                   # 旧版入口（main.py、app.py、app_v2.py）
 ├── sql/                      # 数据库建表与示例数据
 ├── logs/                     # 运行日志（gitignore）
 ├── CLAUDE.md                 # 本文件
@@ -133,6 +132,8 @@ cd 项目根目录
 | QWEATHER_API_HOST | 和风天气专属主机（如 mb4bjc3gtb.re.qweatherapi.com） |
 | WEATHER_CACHE_TTL_SECONDS | 天气缓存秒数（默认 10800 = 3 小时） |
 | DIRECT_CACHE_TTL_SECONDS | API 直连缓存秒数（默认 10800 = 3 小时） |
+| A2A_*_URL / MCP_*_URL | 各 Agent/MCP 服务地址（本地默认 localhost；Docker 部署填 compose 服务名） |
+| A2A_*_PORT / MCP_*_PORT | 各服务端口（脚本启动时读取） |
 
 ### .mcp.json
 
@@ -201,9 +202,10 @@ cd 项目根目录
 
 ### 9.1 新增 MCP 工具
 
-1. 在 `mcp/` 下实现工具
+1. 在 `mcp_servers/` 下实现工具
 2. 保持返回格式：`{"status": "success", "data": [...]}` 或 `{"status": "no_data", "message": "..."}`
-3. 更新 `scripts/start-web.ps1` 服务定义
+3. 工具参数必须结构化（城市、日期、席别等），不要让 LLM 直接生成 SQL
+4. 更新 `scripts/start-web.ps1` 服务定义
 
 ### 9.2 新增 A2A Agent
 

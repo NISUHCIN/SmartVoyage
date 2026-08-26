@@ -24,6 +24,8 @@ import pytz
 from core.config import Config
 from core.create_logger import logger
 from utils.china_cities import detect_city, expand_province_to_capital, get_all_cities
+from utils.request_id import extract_request_id, strip_request_prefix
+from utils.streaming import chunk_text
 
 
 def _extract_text(result: Any) -> str:
@@ -54,9 +56,9 @@ llm = ChatOpenAI(
     extra_body={"enable_thinking": False}
 )
 
-WEATHER_AGENT_URL = "http://localhost:5005"
-TICKET_AGENT_URL = "http://localhost:5006"
-HOTEL_AGENT_URL = "http://localhost:5008"
+WEATHER_AGENT_URL = conf.a2a_weather_url
+TICKET_AGENT_URL = conf.a2a_ticket_url
+HOTEL_AGENT_URL = conf.a2a_hotel_url
 AGENT_CALL_TIMEOUT = 15
 
 itinerary_prompt = ChatPromptTemplate.from_template(
@@ -73,7 +75,13 @@ itinerary_prompt = ChatPromptTemplate.from_template(
 7. 住宿建议优先引用提供的真实酒店信息（酒店名、房型、价格）；若没有真实酒店信息，则给出通用住宿建议。
 8. 回复必须严格按“天气 → 去程交通 → 行程安排 → 返程交通”的顺序输出，返程交通必须放在最后，不要写进最后一天的行程里。
 
-输出格式（严格按以下顺序）：
+输出必须为严格 JSON，不要输出其他内容：
+{{"text": "完整行程正文，格式与下方 text 示例一致", "departure": "出发城市", "destination": "目的地",
+  "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD",
+  "days": [{{"day": 1, "date": "YYYY-MM-DD", "weather": "天气简述", "transport": "交通安排",
+  "hotel": "住宿", "attractions": ["景点1", "景点2"]}}]}}
+
+text 字段示例格式（正文按此顺序）：
 【天气】
 - 穿衣：...
 - 注意：...
@@ -89,9 +97,6 @@ itinerary_prompt = ChatPromptTemplate.from_template(
 - 晚餐：[简单推荐]
 - 住宿：[真实酒店或通用建议]
 
-第二天：
-...
-
 【返程交通】
 - 推荐车次：...
 
@@ -103,10 +108,13 @@ itinerary_prompt = ChatPromptTemplate.from_template(
 """
 )
 
-async def get_agent_text(url: str, query: str) -> str:
+async def get_agent_text(url: str, query: str, request_id: str = "") -> str:
     """调用指定 A2A Agent，返回文本结果；失败时降级为占位文本。"""
     try:
-        client = A2AClient(url, timeout=AGENT_CALL_TIMEOUT)
+        client = A2AClient(
+            url, timeout=AGENT_CALL_TIMEOUT,
+            headers={"X-Request-ID": request_id} if request_id else None
+        )
         msg = Message(content=TextContent(text=query), role=MessageRole.USER)
         task = Task(id="task-" + str(uuid.uuid4()), message=msg.to_dict())
         result = await client.send_task_async(task)
@@ -131,12 +139,12 @@ async def get_agent_text(url: str, query: str) -> str:
         return "暂不可用"
 
 
-def run_async_agent(url: str, query: str) -> str:
+def run_async_agent(url: str, query: str, request_id: str = "") -> str:
     """线程内部运行异步 A2A 请求"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(get_agent_text(url, query))
+        return loop.run_until_complete(get_agent_text(url, query, request_id))
     finally:
         loop.close()
 
@@ -310,7 +318,7 @@ def build_ticket_info(ticket_out_text: str, ticket_back_text: str, prefer_sleepe
 agent_card = AgentCard(
     name="ItineraryPlannerAssistant",
     description="旅行行程规划助手，编排多Agent协作生成多日行程方案，整合天气、交通和酒店信息",
-    url="http://localhost:5009",
+    url=conf.a2a_itinerary_url,
     version="1.0.0",
     capabilities={"streaming": True, "memory": True},
     skills=[
@@ -329,11 +337,31 @@ class ItineraryPlannerServer(A2AServer):
         self.llm = llm
         self._weather_executor = ThreadPoolExecutor(max_workers=3)
 
+    async def stream_response(self, message: Any) -> Any:
+        """A2A 流式响应：复用 handle_task，分块返回文本。"""
+        msg = message if isinstance(message, Message) else Message.from_dict(message)
+        task = Task(id="stream-" + str(uuid.uuid4().hex), message=msg.to_dict())
+        result = await asyncio.to_thread(self.handle_task, task)
+        text = ""
+        try:
+            if result.artifacts:
+                artifact = result.artifacts[0]
+                parts = artifact["parts"] if isinstance(artifact, dict) else artifact.parts
+                if parts:
+                    part = parts[0]
+                    text = part["text"] if isinstance(part, dict) else part.text
+        except Exception:
+            text = ""
+        for piece in chunk_text(text or "暂不可用"):
+            yield piece
+
     def handle_task(self, task: Any) -> Any:
         logger.info("[Itinerary] >>> 进入handle_task")
         content = (task.message or {}).get("content", {})
         conversation = content.get("text", "") if isinstance(content, dict) else ""
-        logger.info(f"行程规划请求: {conversation}")
+        request_id = extract_request_id(conversation)
+        conversation = strip_request_prefix(conversation)
+        logger.info(f"[{request_id or '-'}] 行程规划请求: {conversation}")
 
         try:
             # 提取城市（全国地级及以上行政区列表）
@@ -347,10 +375,10 @@ class ItineraryPlannerServer(A2AServer):
             if detected_city:
                 logger.info(f"[Itinerary] 识别城市 {detected_city}，并行查询天气/酒店/交通")
                 weather_future = self._weather_executor.submit(
-                    run_async_agent, WEATHER_AGENT_URL, f"{detected_city}未来5天天气"
+                    run_async_agent, WEATHER_AGENT_URL, f"{detected_city}未来5天天气", request_id
                 )
                 hotel_future = self._weather_executor.submit(
-                    run_async_agent, HOTEL_AGENT_URL, f"{detected_city}的酒店"
+                    run_async_agent, HOTEL_AGENT_URL, f"{detected_city}的酒店", request_id
                 )
 
             departure_city = extract_departure_city(conversation)
@@ -369,7 +397,8 @@ class ItineraryPlannerServer(A2AServer):
                 ticket_future = self._weather_executor.submit(
                     run_async_agent,
                     TICKET_AGENT_URL,
-                    f"{ticket_kind} {departure_city} {detected_city} {travel_date}"
+                    f"{ticket_kind} {departure_city} {detected_city} {travel_date}",
+                    request_id
                 )
                 return_date = (
                     datetime.strptime(travel_date, "%Y-%m-%d").date()
@@ -378,7 +407,8 @@ class ItineraryPlannerServer(A2AServer):
                 ticket_back_future = self._weather_executor.submit(
                     run_async_agent,
                     TICKET_AGENT_URL,
-                    f"{ticket_kind} {detected_city} {departure_city} {return_date}"
+                    f"{ticket_kind} {detected_city} {departure_city} {return_date}",
+                    request_id
                 )
 
             current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')
@@ -438,10 +468,26 @@ class ItineraryPlannerServer(A2AServer):
             logger.info(f"[Itinerary] 行程内容长度: {len(raw_itinerary)}")
             logger.info(f"[Itinerary] 行程内容前200字: {raw_itinerary[:200]}")
 
-            final_itinerary = raw_itinerary
+            structured = None
+            cleaned = re.sub(r"^```json\s*|\s*```$", "", raw_itinerary.strip()).strip()
+            try:
+                parsed = json.loads(cleaned)
+                if isinstance(parsed, dict) and parsed.get("text"):
+                    final_itinerary = str(parsed["text"]).strip()
+                    structured = parsed
+                else:
+                    final_itinerary = raw_itinerary
+            except Exception:
+                final_itinerary = raw_itinerary
 
             logger.info("[Itinerary] LLM行程生成完成")
-            task.artifacts = [{"parts": [{"type": "text", "text": final_itinerary}]}]
+            if structured:
+                task.artifacts = [{"parts": [
+                    {"type": "text", "text": final_itinerary},
+                    {"type": "text", "text": json.dumps(structured, ensure_ascii=False)},
+                ]}]
+            else:
+                task.artifacts = [{"parts": [{"type": "text", "text": final_itinerary}]}]
             task.status = TaskStatus(state=TaskState.COMPLETED)
             logger.info("[Itinerary] task标记COMPLETED，返回结果")
             return task
@@ -461,4 +507,4 @@ if __name__ == "__main__":
     logger.info(f"描述: {server.agent_card.description}")
     for skill in server.agent_card.skills:
         logger.info(f"- {skill.name}: {skill.description}")
-    run_server(server, host="127.0.0.1", port=5009)
+    run_server(server, host="127.0.0.1", port=conf.a2a_itinerary_port)

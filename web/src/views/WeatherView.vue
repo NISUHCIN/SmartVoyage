@@ -9,6 +9,7 @@ const city = ref('')
 const date = ref('')
 const loading = ref(false)
 const reply = ref('')
+const rows = ref([])
 const error = ref('')
 
 async function query() {
@@ -19,10 +20,12 @@ async function query() {
   error.value = ''
   loading.value = true
   reply.value = ''
+  rows.value = []
   const message = date.value ? `${city.value} ${date.value} 天气` : `${city.value} 未来5天天气`
   try {
     const data = await queryWeather(message)
     reply.value = data.reply
+    rows.value = data.data || []
   } catch (e) {
     error.value = e.message
   } finally {
@@ -44,6 +47,6 @@ async function query() {
         <button class="primary-button" :disabled="loading" @click="query"><Icon name="search" :size="18" /> 查询</button>
       </div>
     </section>
-    <QueryResult :loading="loading" :error="error" :reply="reply" title="天气结果" />
+    <QueryResult :loading="loading" :error="error" :reply="reply" :rows="rows" title="天气结果" />
   </div>
 </template>

@@ -1,0 +1,6 @@
+# spider 爬虫脚本与可选工具依赖
+-r requirements.txt
+beautifulsoup4==4.13.4
+lxml==6.0.0
+schedule==1.2.2
+qianfan

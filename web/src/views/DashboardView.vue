@@ -24,7 +24,7 @@ const onlineCount = computed(() => agents.value.filter((a) => a.status === 'onli
 
 const services = [
   { name: '天气', desc: '全国城市天气查询', icon: 'weather', to: '/weather' },
-  { name: '票务', desc: '火车、飞机、演出查询与订票', icon: 'ticket', to: '/ticket' },
+  { name: '票务', desc: '火车/高铁查询与订票', icon: 'ticket', to: '/ticket' },
   { name: '酒店', desc: '按城市与区域查找酒店', icon: 'bed', to: '/hotel' },
   { name: '行程', desc: '多日行程规划安排', icon: 'route', to: '/itinerary' }
 ]

@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { login, register } from '../api'
 import Icon from '../components/Icon.vue'
+import { setAuth } from '../auth'
 
 const router = useRouter()
 const tab = ref('login')
@@ -14,8 +15,7 @@ const error = ref('')
 const loading = ref(false)
 
 function saveAuth(data) {
-  localStorage.setItem('sv_token', data.token)
-  localStorage.setItem('sv_username', data.username || username.value)
+  setAuth(data.token, data.username || username.value)
   router.push('/orders')
 }
 

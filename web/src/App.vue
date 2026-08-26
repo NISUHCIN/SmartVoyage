@@ -1,12 +1,25 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from './components/Icon.vue'
+import { clearAuth, getUsername } from './auth'
+import { getMe, logout as apiLogout } from './api'
 
 const route = useRoute()
 const router = useRouter()
-const username = computed(() => localStorage.getItem('sv_username') || '')
-const loggedIn = computed(() => Boolean(localStorage.getItem('sv_token')))
+const user = ref(getUsername())
+const username = computed(() => user.value)
+const loggedIn = computed(() => Boolean(user.value))
+
+onMounted(async () => {
+  try {
+    const me = await getMe()
+    user.value = me.username || ''
+  } catch (e) {
+    clearAuth()
+    user.value = ''
+  }
+})
 
 const nav = [
   { to: '/', label: '工作台', icon: 'dashboard' },
@@ -19,8 +32,9 @@ const nav = [
 ]
 
 function logout() {
-  localStorage.removeItem('sv_token')
-  localStorage.removeItem('sv_username')
+  apiLogout().catch(() => {})
+  clearAuth()
+  user.value = ''
   router.push('/')
 }
 </script>

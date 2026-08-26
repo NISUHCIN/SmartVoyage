@@ -2,8 +2,9 @@
 import { onMounted, ref } from 'vue'
 import { cancelOrder, getOrders } from '../api'
 import Icon from '../components/Icon.vue'
+import { clearAuth, getUsername } from '../auth'
 
-const token = localStorage.getItem('sv_token')
+const loggedIn = ref(Boolean(getUsername()))
 const orders = ref([])
 const loading = ref(false)
 const error = ref('')
@@ -15,6 +16,10 @@ async function load() {
     orders.value = await getOrders()
   } catch (e) {
     error.value = e.message.includes('认证') || e.message.includes('401') ? '请先登录' : e.message
+    if (error.value === '请先登录') {
+      clearAuth()
+      loggedIn.value = false
+    }
   } finally {
     loading.value = false
   }
@@ -38,7 +43,7 @@ async function cancel(orderNo) {
       <h1>订单</h1>
       <p class="muted">查看和取消已预订的票务或酒店</p>
     </header>
-    <div v-if="!token" class="panel">
+    <div v-if="!loggedIn" class="panel">
       <p class="empty-text">登录后查看订单</p>
       <router-link to="/auth" class="text-button"><Icon name="user" :size="16" /> 去登录</router-link>
     </div>

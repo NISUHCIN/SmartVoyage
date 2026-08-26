@@ -25,13 +25,13 @@ docker compose up -d --build
 - 启动 4 个 MCP 服务
 - 启动 5 个 A2A Agent 服务
 - 启动 REST API 服务
-- 启动 Streamlit 前端
+- 启动 Vue 前端
 
 ### 3. 访问服务
 
 | 服务 | 地址 |
 |------|------|
-| 前端界面 | http://localhost:8501 |
+| 前端界面 | http://localhost:5173 |
 | API 接口 | http://localhost:8080/docs |
 | MySQL | localhost:3306 |
 
@@ -60,7 +60,7 @@ docker compose down -v
 ```
 用户浏览器
     │
-    ├── Streamlit 前端 (:8501)
+    ├── Vue 前端 (:5173)
     └── REST API (:8080)
          │
     ┌────┴──── A2A Agent 层 ────┐

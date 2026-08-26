@@ -16,6 +16,7 @@ class SmartVoyagePrompts:
 - 支持意图：['weather' (天气查询), 'flight' (机票查询), 'train' (高铁/火车票查询), 'concert' (演唱会票查询), 'hotel' (酒店查询), 'itinerary' (行程规划), 'order' (票务预定), 'attraction' (景点推荐)] 或其组合（如 ['weather', 'flight']）。如果意图超出范围，返回意图 'out_of_scope'。
 - 酒店查询意图：涉及到住宿、酒店、宾馆、民宿时则为hotel。
 - 行程规划意图：用户要求规划行程、制定攻略、安排行程、多日游、行程安排时则为itinerary。
+- 如果已识别为itinerary，不要再同时返回weather、train、flight、hotel、attraction等子意图，行程Agent会统一整合天气、交通、酒店和景点，避免回答内容重复。
 - 注意票务预定和票务查询要区分开，涉及到订票时则为order，只是查询则为flight、train或concert。
 - 如果意图为 'out_of_scope'时，此时不需要再进行查询改写，你可以直接根据用户问题进行回复，将回复答案写到follow_up_message中即可。
 - 在进行用户查询改写时，不要回答其问题，也不要修改其原意，只需要将对话历史中跟该查询相关的上下文信息取出来，然后整合到一起，使用户查询更明确即可，要仔细分析上下文信息，不要进行过度整合。如果用户查询跟对话历史无关，则输出原始查询。

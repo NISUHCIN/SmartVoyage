@@ -3,7 +3,7 @@
 services:
   # ---------- 数据库 ----------
   mysql:
-    image: mysql:8.0
+    image: ${MYSQL_IMAGE:-mysql:8.0}
     container_name: smartvoyage-mysql
     restart: unless-stopped
     environment:
@@ -33,7 +33,7 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
-    command: python mcp/mcp_ticket_server.py
+    command: python mcp_servers/mcp_ticket_server.py
     depends_on:
       mysql:
         condition: service_healthy
@@ -45,7 +45,7 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
-    command: python mcp/mcp_weather_server.py
+    command: python mcp_servers/mcp_weather_server.py
     depends_on:
       mysql:
         condition: service_healthy
@@ -57,7 +57,7 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
-    command: python mcp/mcp_order_server.py
+    command: python mcp_servers/mcp_order_server.py
     depends_on:
       mysql:
         condition: service_healthy
@@ -69,7 +69,7 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
-    command: python mcp/mcp_hotel_server.py
+    command: python mcp_servers/mcp_hotel_server.py
     depends_on:
       mysql:
         condition: service_healthy
@@ -82,6 +82,7 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
+      MCP_WEATHER_URL: http://mcp-weather:8002/mcp
     command: python agents/weather_server.py
     depends_on:
       - mcp-weather
@@ -93,6 +94,7 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
+      MCP_TICKET_URL: http://mcp-ticket:8001/mcp
     command: python agents/ticket_server.py
     depends_on:
       - mcp-ticket
@@ -104,6 +106,8 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
+      MCP_ORDER_URL: http://mcp-order:8003/mcp
+      A2A_TICKET_URL: http://a2a-ticket:5006
     command: python agents/order_server.py
     depends_on:
       - a2a-ticket
@@ -116,6 +120,7 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
+      MCP_HOTEL_URL: http://mcp-hotel:8004/mcp
     command: python agents/hotel_server.py
     depends_on:
       - mcp-hotel
@@ -125,9 +130,16 @@ services:
     container_name: smartvoyage-a2a-itinerary
     restart: unless-stopped
     env_file: .env
+    environment:
+      DB_HOST: mysql
+      A2A_WEATHER_URL: http://a2a-weather:5005
+      A2A_TICKET_URL: http://a2a-ticket:5006
+      A2A_HOTEL_URL: http://a2a-hotel:5008
     command: python agents/itinerary_server.py
     depends_on:
       - a2a-weather
+      - a2a-ticket
+      - a2a-hotel
 
   # ---------- API 服务 ----------
   api-server:
@@ -137,16 +149,31 @@ services:
     env_file: .env
     environment:
       DB_HOST: mysql
+      A2A_WEATHER_URL: http://a2a-weather:5005
+      A2A_TICKET_URL: http://a2a-ticket:5006
+      A2A_ORDER_URL: http://a2a-order:5007
+      A2A_HOTEL_URL: http://a2a-hotel:5008
+      A2A_ITINERARY_URL: http://a2a-itinerary:5009
     command: python backend/api_server.py
     ports:
       - "8080:8080"
     depends_on:
       mysql:
         condition: service_healthy
+      a2a-weather:
+        condition: service_started
+      a2a-ticket:
+        condition: service_started
+      a2a-order:
+        condition: service_started
+      a2a-hotel:
+        condition: service_started
+      a2a-itinerary:
+        condition: service_started
 
   # ---------- 前端 ----------
   frontend:
-    image: node:20-alpine
+    image: ${NODE_IMAGE:-node:20-alpine}
     container_name: smartvoyage-frontend
     restart: unless-stopped
     working_dir: /app/web

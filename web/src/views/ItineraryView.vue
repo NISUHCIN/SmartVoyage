@@ -10,6 +10,7 @@ const days = ref(3)
 const preference = ref('')
 const loading = ref(false)
 const reply = ref('')
+const rows = ref([])
 const error = ref('')
 
 async function query() {
@@ -20,11 +21,13 @@ async function query() {
   error.value = ''
   loading.value = true
   reply.value = ''
+  rows.value = []
   const preferenceText = preference.value ? `，偏好${preference.value}` : ''
   const message = `规划${city.value}${days.value}天行程${preferenceText}`
   try {
     const data = await queryItinerary(message)
     reply.value = data.reply
+    rows.value = (data.data && data.data.days) || []
   } catch (e) {
     error.value = e.message
   } finally {
@@ -47,6 +50,6 @@ async function query() {
         <button class="primary-button" :disabled="loading" @click="query"><Icon name="route" :size="18" /> 生成行程</button>
       </div>
     </section>
-    <QueryResult :loading="loading" :error="error" :reply="reply" title="行程方案" />
+    <QueryResult :loading="loading" :error="error" :reply="reply" :rows="rows" title="行程方案" />
   </div>
 </template>

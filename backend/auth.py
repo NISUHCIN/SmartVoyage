@@ -177,13 +177,13 @@ def login_user(username: str, password: str) -> Tuple[bool, str, Optional[dict]]
 
 # ---------- 会话持久化 ----------
 
-def create_session(user_id: int, title: str = "新对话") -> str:
+def create_session(user_id: int = None, title: str = "新对话", session_id: str = None) -> str:
     """创建新的对话会话，返回 session_id"""
     conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        session_id = str(uuid.uuid4())
+        session_id = session_id or str(uuid.uuid4())
         cursor.execute(
             "INSERT INTO chat_sessions (session_id, user_id, title) VALUES (%s, %s, %s)",
             (session_id, user_id, title)
@@ -193,6 +193,41 @@ def create_session(user_id: int, title: str = "新对话") -> str:
     except Exception as e:
         logger.error(f"创建会话失败: {e}")
         return None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def session_exists(session_id: str) -> bool:
+    """判断会话是否存在"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM chat_sessions WHERE session_id = %s", (session_id,))
+        return cursor.fetchone() is not None
+    except Exception as e:
+        logger.error(f"检查会话失败: {e}")
+        return False
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def session_belongs_to_user(session_id: str, user_id: int) -> bool:
+    """判断会话是否属于指定用户"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM chat_sessions WHERE session_id = %s AND user_id = %s",
+            (session_id, user_id)
+        )
+        return cursor.fetchone() is not None
+    except Exception as e:
+        logger.error(f"校验会话归属失败: {e}")
+        return False
     finally:
         if conn and conn.is_connected():
             conn.close()
@@ -256,16 +291,38 @@ def list_user_sessions(user_id: int) -> list:
 
 # ---------- 订单管理 ----------
 
-def create_order(user_id: int, order_type: str, item_desc: str, quantity: int,
-                 unit_price: float, contact_name: str = None, contact_phone: str = None,
-                 item_id: int = None) -> Tuple[bool, str, Optional[dict]]:
-    """创建订单"""
+def create_order(order_type: str, item_desc: str, quantity: int,
+                 unit_price: float, item_id: int = None, user_id: int = None,
+                 contact_name: str = None, contact_phone: str = None) -> Tuple[bool, str, Optional[dict]]:
+    """在同一事务内创建订单并扣减库存，任一步失败都整体回滚。"""
     conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         order_no = str(uuid.uuid4())
-        total_price = unit_price * quantity
+        total_price = round(unit_price * quantity, 2)
+
+        table_map = {
+            'train': 'train_tickets',
+            'flight': 'flight_tickets',
+            'concert': 'concert_tickets',
+            'hotel': 'hotel_rooms'
+        }
+        table = table_map.get(order_type)
+
+        if item_id and table:
+            col = 'remaining_seats' if table != 'hotel_rooms' else 'remaining_rooms'
+            cursor.execute(
+                f"SELECT {col} AS remaining FROM {table} WHERE id = %s FOR UPDATE",
+                (item_id,)
+            )
+            item = cursor.fetchone()
+            if not item:
+                conn.rollback()
+                return False, "未找到要预订的记录", None
+            if item["remaining"] < quantity:
+                conn.rollback()
+                return False, f"库存不足，仅剩 {item['remaining']}，需要 {quantity}", None
 
         cursor.execute(
             """INSERT INTO orders (order_no, user_id, order_type, item_id, item_desc, quantity,
@@ -274,33 +331,26 @@ def create_order(user_id: int, order_type: str, item_desc: str, quantity: int,
             (order_no, user_id, order_type, item_id, item_desc, quantity,
              unit_price, total_price, contact_name, contact_phone)
         )
+
+        if item_id and table:
+            col = 'remaining_seats' if table != 'hotel_rooms' else 'remaining_rooms'
+            cursor.execute(
+                f"UPDATE {table} SET {col} = {col} - %s WHERE id = %s AND {col} >= %s",
+                (quantity, item_id, quantity)
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return False, "库存不足，下单失败", None
+
         conn.commit()
-
-        # 扣减库存
-        if item_id:
-            table_map = {
-                'train': 'train_tickets',
-                'flight': 'flight_tickets',
-                'concert': 'concert_tickets',
-                'hotel': 'hotel_rooms'
-            }
-            table = table_map.get(order_type)
-            if table:
-                col = 'remaining_seats' if table != 'hotel_rooms' else 'remaining_rooms'
-                cursor.execute(
-                    f"UPDATE {table} SET {col} = {col} - %s WHERE id = %s AND {col} >= %s",
-                    (quantity, item_id, quantity)
-                )
-                conn.commit()
-                if cursor.rowcount == 0:
-                    logger.warning(f"库存不足: {table} id={item_id}")
-
         return True, "下单成功", {
             "order_no": order_no,
             "total_price": total_price,
             "status": "confirmed"
         }
     except Exception as e:
+        if conn:
+            conn.rollback()
         logger.error(f"创建订单失败: {e}")
         return False, f"下单失败: {str(e)}", None
     finally:
@@ -328,7 +378,7 @@ def list_user_orders(user_id: int) -> list:
 
 
 def cancel_order(order_no: str, user_id: int) -> Tuple[bool, str]:
-    """取消订单"""
+    """取消订单并在同一事务内恢复库存。"""
     conn = None
     try:
         conn = get_db_connection()
@@ -344,12 +394,31 @@ def cancel_order(order_no: str, user_id: int) -> Tuple[bool, str]:
             return False, f"订单状态为 {order['status']}，无法取消"
 
         cursor.execute(
-            "UPDATE orders SET status = 'cancelled' WHERE order_no = %s",
+            "UPDATE orders SET status = 'cancelled' WHERE order_no = %s AND status = 'confirmed'",
             (order_no,)
         )
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return False, "订单状态已变更，无法取消"
+
+        table_map = {
+            'train': 'train_tickets',
+            'flight': 'flight_tickets',
+            'concert': 'concert_tickets',
+            'hotel': 'hotel_rooms'
+        }
+        table = table_map.get(order['order_type'])
+        if order.get('item_id') and table:
+            col = 'remaining_seats' if table != 'hotel_rooms' else 'remaining_rooms'
+            cursor.execute(
+                f"UPDATE {table} SET {col} = {col} + %s WHERE id = %s",
+                (order['quantity'], order['item_id'])
+            )
         conn.commit()
         return True, "订单已取消"
     except Exception as e:
+        if conn:
+            conn.rollback()
         logger.error(f"取消订单失败: {e}")
         return False, f"取消失败: {str(e)}"
     finally:

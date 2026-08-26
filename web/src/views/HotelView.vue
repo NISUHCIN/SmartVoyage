@@ -10,6 +10,7 @@ const district = ref('')
 const keyword = ref('')
 const loading = ref(false)
 const reply = ref('')
+const rows = ref([])
 const error = ref('')
 
 async function query() {
@@ -20,12 +21,14 @@ async function query() {
   error.value = ''
   loading.value = true
   reply.value = ''
+  rows.value = []
   const districtText = district.value ? district.value : ''
   const keywordText = keyword.value ? `，${keyword.value}` : ''
   const message = `查询${city.value}${districtText}的酒店${keywordText}`
   try {
     const data = await queryHotel(message)
     reply.value = data.reply
+    rows.value = data.data || []
   } catch (e) {
     error.value = e.message
   } finally {
@@ -48,6 +51,6 @@ async function query() {
         <button class="primary-button" :disabled="loading" @click="query"><Icon name="search" :size="18" /> 查询</button>
       </div>
     </section>
-    <QueryResult :loading="loading" :error="error" :reply="reply" title="酒店结果" />
+    <QueryResult :loading="loading" :error="error" :reply="reply" :rows="rows" title="酒店结果" />
   </div>
 </template>

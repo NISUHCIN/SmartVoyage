@@ -46,6 +46,18 @@ class Config:
 
         self.mcp_hotel_port = int(os.getenv('MCP_HOTEL_PORT', '8004'))
         self.a2a_hotel_port = int(os.getenv('A2A_HOTEL_PORT', '5008'))
+        self.a2a_itinerary_port = int(os.getenv('A2A_ITINERARY_PORT', '5009'))
+
+        # 服务地址（本地默认 localhost，容器部署时通过环境变量指向服务名）
+        self.mcp_ticket_url = os.getenv('MCP_TICKET_URL', f'http://localhost:{self.mcp_ticket_port}/mcp')
+        self.mcp_weather_url = os.getenv('MCP_WEATHER_URL', f'http://localhost:{self.mcp_weather_port}/mcp')
+        self.mcp_order_url = os.getenv('MCP_ORDER_URL', f'http://localhost:{self.mcp_order_port}/mcp')
+        self.mcp_hotel_url = os.getenv('MCP_HOTEL_URL', f'http://localhost:{self.mcp_hotel_port}/mcp')
+        self.a2a_weather_url = os.getenv('A2A_WEATHER_URL', f'http://localhost:{self.a2a_weather_port}')
+        self.a2a_ticket_url = os.getenv('A2A_TICKET_URL', f'http://localhost:{self.a2a_ticket_port}')
+        self.a2a_order_url = os.getenv('A2A_ORDER_URL', f'http://localhost:{self.a2a_order_port}')
+        self.a2a_hotel_url = os.getenv('A2A_HOTEL_URL', f'http://localhost:{self.a2a_hotel_port}')
+        self.a2a_itinerary_url = os.getenv('A2A_ITINERARY_URL', f'http://localhost:{self.a2a_itinerary_port}')
 
         # 日志配置
         self.log_file = os.path.join(project_root, 'logs', 'app.log')
