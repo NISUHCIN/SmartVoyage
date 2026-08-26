@@ -127,6 +127,9 @@ def _in_memory_rate_limit(client_ip: str) -> bool:
             return False
         stamps.append(now)
         _rate_attempts[client_ip] = stamps
+        if len(_rate_attempts) > 10000:
+            for ip in [ip for ip, items in _rate_attempts.items() if not items]:
+                del _rate_attempts[ip]
         return True
 
 
@@ -373,6 +376,9 @@ def _chat_user_id(request: Request) -> Optional[int]:
 async def chat(req: ChatRequest, request: Request, authorization: Optional[str] = Header(None)):
     if not req.message.strip():
         raise HTTPException(400, "消息不能为空")
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(429, "请求过于频繁，请稍后再试")
     user_id = _chat_user_id(request)
     session_id = _resolve_chat_session(req.session_id, user_id)
 
@@ -389,6 +395,9 @@ async def chat_stream(req: ChatRequest, request: Request,
                       authorization: Optional[str] = Header(None)):
     if not req.message.strip():
         raise HTTPException(400, "消息不能为空")
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(429, "请求过于频繁，请稍后再试")
     user_id = _chat_user_id(request)
     session_id = _resolve_chat_session(req.session_id, user_id)
     service = get_chat_service()

@@ -13,31 +13,24 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import hashlib
 import hmac
-import json
 import time
 import uuid
 import os
 from typing import Optional, Tuple
 from datetime import datetime
 
-import mysql.connector
+import jwt
 
 from core.config import Config
 from core.create_logger import logger
+from utils.db import get_connection
 
 conf = Config()
 
 
 def get_db_connection():
-    """获取数据库连接"""
-    return mysql.connector.connect(
-        host=conf.host,
-        user=conf.user,
-        password=conf.password,
-        database=conf.database,
-        port=conf.db_port,
-        charset="utf8mb4"
-    )
+    """从共享连接池获取数据库连接"""
+    return get_connection()
 
 
 # ---------- 密码哈希 ----------
@@ -63,50 +56,22 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 # ---------- JWT 令牌 ----------
 
-def _b64encode(data: bytes) -> str:
-    import base64
-    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
-
-
-def _b64decode(s: str) -> bytes:
-    import base64
-    padding = 4 - len(s) % 4
-    if padding != 4:
-        s += '=' * padding
-    return base64.urlsafe_b64decode(s)
-
-
 def create_token(user_id: int, username: str) -> str:
     """签发 JWT 令牌"""
-    header = _b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
-    payload_data = {
+    now = int(time.time())
+    payload = {
         "user_id": user_id,
         "username": username,
-        "exp": int(time.time()) + conf.jwt_expire_hours * 3600,
-        "iat": int(time.time())
+        "exp": now + conf.jwt_expire_hours * 3600,
+        "iat": now,
     }
-    payload = _b64encode(json.dumps(payload_data).encode())
-    signature = hmac.new(conf.jwt_secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
-    sig = _b64encode(signature)
-    return f"{header}.{payload}.{sig}"
+    return jwt.encode(payload, conf.jwt_secret, algorithm="HS256")
 
 
 def verify_token(token: str) -> Optional[dict]:
     """验证 JWT 令牌，返回 payload 或 None"""
     try:
-        parts = token.split('.')
-        if len(parts) != 3:
-            return None
-        header, payload, sig = parts
-        expected_sig = _b64encode(
-            hmac.new(conf.jwt_secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
-        )
-        if not hmac.compare_digest(sig, expected_sig):
-            return None
-        payload_data = json.loads(_b64decode(payload))
-        if payload_data.get("exp", 0) < time.time():
-            return None
-        return payload_data
+        return jwt.decode(token, conf.jwt_secret, algorithms=["HS256"])
     except Exception:
         return None
 

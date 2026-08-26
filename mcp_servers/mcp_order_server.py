@@ -29,11 +29,8 @@ order_mcp = FastMCP(
 
 
 def _get_conn():
-    import mysql.connector
-    return mysql.connector.connect(
-        host=conf.host, user=conf.user, password=conf.password,
-        database=conf.database, port=conf.db_port
-    )
+    from utils.db import get_connection
+    return get_connection()
 
 
 def _order_response(ok: bool, msg: str, data: dict = None) -> str:

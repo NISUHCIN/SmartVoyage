@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-import mysql.connector
 import json
 from typing import Optional
 from datetime import date, datetime, timedelta
@@ -19,6 +18,7 @@ from utils.query_builders import (
     build_flight_query,
     build_concert_query,
 )
+from utils.db import get_connection
 
 conf = Config()
 
@@ -30,13 +30,7 @@ class TicketService:
     def _execute(self, sql: str, params: list) -> str:
         conn = None
         try:
-            conn = mysql.connector.connect(
-                host=self.conf.host,
-                user=self.conf.user,
-                password=self.conf.password,
-                database=self.conf.database,
-                port=self.conf.db_port
-            )
+            conn = get_connection()
             cursor = conn.cursor(dictionary=True)
             cursor.execute(sql, params)
             results = cursor.fetchall()

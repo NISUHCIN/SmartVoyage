@@ -156,6 +156,16 @@ class ApiServerTest(unittest.TestCase):
         call.assert_awaited_once()
         self.assertTrue(call.await_args.kwargs.get("cacheable", True))
 
+    def test_chat_rate_limited(self):
+        with mock.patch.object(api_server, "_check_rate_limit", return_value=False):
+            res = self.client.post("/api/chat", json={"message": "北京天气", "session_id": "verify"})
+        self.assertEqual(res.status_code, 429)
+
+    def test_chat_stream_rate_limited(self):
+        with mock.patch.object(api_server, "_check_rate_limit", return_value=False):
+            res = self.client.post("/api/chat/stream", json={"message": "北京天气", "session_id": "verify"})
+        self.assertEqual(res.status_code, 429)
+
 
 def test_call_agent_direct_only_caches_cacheable_requests():
     api_server._direct_cache.clear()

@@ -6,7 +6,6 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-import mysql.connector
 import json
 from typing import Optional
 from datetime import date, datetime, timedelta
@@ -17,6 +16,7 @@ from core.config import Config
 from core.create_logger import logger
 from utils.format import DateEncoder, default_encoder
 from utils.query_builders import build_hotel_query
+from utils.db import get_connection
 
 conf = Config()
 
@@ -34,13 +34,7 @@ class HotelService:
         logger.info(f"执行酒店查询: {params} rid={request_id or '-'}")
         conn = None
         try:
-            conn = mysql.connector.connect(
-                host=self.conf.host,
-                user=self.conf.user,
-                password=self.conf.password,
-                database=self.conf.database,
-                port=self.conf.db_port
-            )
+            conn = get_connection()
             cursor = conn.cursor(dictionary=True)
             cursor.execute(sql, params)
             results = cursor.fetchall()

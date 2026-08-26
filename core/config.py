@@ -31,6 +31,7 @@ class Config:
         self.password = os.getenv('DB_PASSWORD', '')
         self.database = os.getenv('DB_NAME', 'travel_rag')
         self.db_port = int(os.getenv('DB_PORT', '3306'))
+        self.db_pool_size = int(os.getenv('DB_POOL_SIZE', '8'))
 
         # 和风天气 API（从环境变量读取）
         self.weather_api_key = os.getenv('WEATHER_API_KEY', '')
