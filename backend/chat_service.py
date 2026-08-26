@@ -412,12 +412,8 @@ class SmartVoyageChatService:
                                     async for event in emit(text):
                                         yield event
 
-                        gen = stream_agent()
-                        while True:
-                            try:
-                                await asyncio.wait_for(gen.__anext__(), timeout=AGENT_TIMEOUT)
-                            except StopAsyncIteration:
-                                break
+                        async for event in stream_agent():
+                            yield event
                         if not agent_result.strip():
                             try:
                                 raw = await asyncio.wait_for(
@@ -459,9 +455,6 @@ class SmartVoyageChatService:
                         async for chunk in chain.astream({"query": query_str, "raw_response": agent_result}):
                             async for event in emit(_extract_chunk_text(chunk)):
                                 yield event
-                    else:
-                        async for event in emit(agent_result):
-                            yield event
 
                 agent_hint = ",".join(routed_agents)
 

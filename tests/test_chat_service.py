@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import threading
 from pathlib import Path
@@ -76,6 +77,11 @@ class _FakePrompt:
         return other
 
 
+class _StreamingAgent:
+    async def stream_response(self, message):
+        yield "代理返回"
+
+
 def test_process_uses_db_history_for_persisted_session(monkeypatch):
     rows = [
         {"role": "user", "content": "北京今天天气"},
@@ -113,3 +119,32 @@ def test_process_uses_db_history_for_persisted_session(monkeypatch):
     assert "Assistant: 北京晴" in captured["history"]
     assert "Assistant: 北京晴" in fake_agent.last_message
     assert reply == "天气总结"
+
+
+def test_stream_process_does_not_duplicate_itinerary_reply(monkeypatch):
+    monkeypatch.setattr(chat_service, "load_session_messages", lambda session_id: [])
+    monkeypatch.setattr(chat_service, "session_exists", lambda session_id: True)
+    monkeypatch.setattr(chat_service, "save_message", lambda *args, **kwargs: None)
+
+    service = SmartVoyageChatService.__new__(SmartVoyageChatService)
+    service.conf = Config()
+    service.llm = None
+    service._session_history = {}
+    service._lock = threading.Lock()
+    agent = _StreamingAgent()
+    monkeypatch.setattr(chat_service, "A2AClient", lambda *args, **kwargs: agent)
+
+    def fake_intent(user_input, session_id, history=None):
+        return ["itinerary"], {"itinerary": "规划北京3天游"}, ""
+
+    service._intent_agent = fake_intent
+
+    deltas = []
+
+    async def run():
+        async for event in service.stream_process("规划北京3天游", session_id="s1", user_id=1):
+            if event.get("delta"):
+                deltas.append(event["delta"])
+
+    asyncio.run(run())
+    assert deltas == ["代理返回"]

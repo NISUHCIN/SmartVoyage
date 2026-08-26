@@ -83,8 +83,9 @@ itinerary_prompt = ChatPromptTemplate.from_template(
 4. 不要多余开场白，直接按下面顺序输出。
 5. 严格精简，总输出控制在600字以内。
 6. 交通建议必须使用“可选交通信息”中推荐的真实车次/航班，不得编造；若推荐班次时间不合适，明确提示用户并建议改期或改乘其他方式。
-7. 住宿建议优先引用提供的真实酒店信息（酒店名、房型、价格）；若没有真实酒店信息，则给出通用住宿建议。
-8. 回复必须严格按“天气 → 去程交通 → 行程安排 → 返程交通”的顺序输出，返程交通必须放在最后，不要写进最后一天的行程里。
+7. 返程班次发车时间必须晚于最后一天行程结束时间：若返程发车较早（如中午前后），最后一天只能安排上午活动，并保证发车前至少1.5小时到达车站；不得推荐与返程冲突的下午行程，也不得只写“可能赶不上”后仍保留冲突安排。
+8. 住宿建议优先引用提供的真实酒店信息（酒店名、房型、价格）；若没有真实酒店信息，则给出通用住宿建议。
+9. 回复必须严格按“天气 → 去程交通 → 行程安排 → 返程交通”的顺序输出，返程交通必须放在最后，不要写进最后一天的行程里。
 
 输出必须为严格 JSON，不要输出其他内容：
 {{"text": "完整行程正文，格式与下方 text 示例一致", "departure": "出发城市", "destination": "目的地",
@@ -287,9 +288,13 @@ def select_transport(entries: list[dict], direction: str, prefer_sleeper: bool) 
             return 20.0 + abs(hour - 8)
         arr = entry["arrival"]
         if arr and arr.date() == dep.date() and 12 <= hour <= 18 and arr.hour <= 22:
-            return 0.0
+            if hour >= 15:
+                return 0.0
+            return 12.0
         if 12 <= hour <= 18:
-            return 5.0
+            if hour >= 15:
+                return 3.0
+            return 15.0
         return 20.0 + abs(hour - 15)
 
     best = min(entries, key=score)
@@ -324,6 +329,58 @@ def build_ticket_info(ticket_out_text: str, ticket_back_text: str, prefer_sleepe
     else:
         parts.append("返程：暂无合适班次，建议查询其他日期或改乘其他交通工具")
     return "\n".join(parts)
+
+
+def _dedupe_repeated_text(text: str) -> str:
+    """LLM 偶发整段重复输出时，合并完全相同的前后半段。"""
+    if not text:
+        return text
+    lines = text.splitlines()
+    if len(lines) >= 2 and len(lines) % 2 == 0:
+        half = len(lines) // 2
+        if lines[:half] == lines[half:]:
+            return "\n".join(lines[:half])
+    stripped = text.strip()
+    if len(stripped) >= 4 and len(stripped) % 2 == 0:
+        half = len(stripped) // 2
+        if stripped[:half] == stripped[half:]:
+            return stripped[:half]
+    return text
+
+
+def _return_departure_time(ticket_info: str) -> tuple[int, int] | None:
+    for line in ticket_info.splitlines():
+        if "返程推荐" in line:
+            match = re.search(r"(\d{2}):(\d{2}):\d{2}", line)
+            if match:
+                return int(match.group(1)), int(match.group(2))
+    return None
+
+
+def _last_day_has_afternoon(text: str) -> bool:
+    day_sections = [
+        section for section in re.split(r"(?=第[一二三四五六七八九十\d]+天)", text)
+        if re.match(r"第[一二三四五六七八九十\d]+天", section)
+    ]
+    if day_sections:
+        return "下午" in day_sections[-1]
+    return "下午" in text.split("【返程交通】")[0]
+
+
+def _return_conflict_note(ticket_info: str, itinerary_text: str) -> str:
+    departure = _return_departure_time(ticket_info)
+    if not departure:
+        return ""
+    hour, minute = departure
+    if hour >= 15:
+        return ""
+    if _last_day_has_afternoon(itinerary_text):
+        return (
+            f"注意：返程车次 {hour:02d}:{minute:02d} 发车，"
+            "最后一天必须只安排上午活动，并在发车前至少1.5小时到达车站；"
+            "上一版仍安排了下午活动，请重新调整，不要保留冲突安排。"
+        )
+    return ""
 
 
 agent_card = AgentCard(
@@ -490,6 +547,32 @@ class ItineraryPlannerServer(A2AServer):
                     final_itinerary = raw_itinerary
             except Exception:
                 final_itinerary = raw_itinerary
+
+            conflict_note = _return_conflict_note(ticket_info, final_itinerary)
+            if conflict_note:
+                logger.warning("[Itinerary] 返程时间与最后一天行程冲突，重试生成一次")
+                raw_result = chain.invoke({
+                    "query": conversation + "\n" + conflict_note,
+                    "weather_info": weather_info,
+                    "ticket_info": ticket_info,
+                    "hotel_info": hotel_info,
+                    "current_date": current_date,
+                })
+                raw_itinerary = _extract_text(raw_result)
+                if raw_itinerary:
+                    structured = None
+                    cleaned = re.sub(r"^```json\s*|\s*```$", "", raw_itinerary.strip()).strip()
+                    try:
+                        parsed = json.loads(cleaned)
+                        if isinstance(parsed, dict) and parsed.get("text"):
+                            final_itinerary = str(parsed["text"]).strip()
+                            structured = parsed
+                        else:
+                            final_itinerary = raw_itinerary
+                    except Exception:
+                        final_itinerary = raw_itinerary
+
+            final_itinerary = _dedupe_repeated_text(final_itinerary)
 
             logger.info("[Itinerary] LLM行程生成完成")
             if structured:
