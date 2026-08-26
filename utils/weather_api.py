@@ -8,12 +8,14 @@ weather_api.py：和风天气 API 实时数据拉取模块。
 """
 import sys
 from pathlib import Path
+
 sys.path.append(str(Path(__file__).parent.parent))
 
-import json
-import requests
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional
+
+import requests
+
 from core.config import Config
 from core.create_logger import logger
 

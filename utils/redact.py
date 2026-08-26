@@ -1,7 +1,6 @@
 """日志脱敏：手机号、邮箱、身份证号不落明文。"""
 import re
 
-
 _PHONE_RE = re.compile(r"1[3-9]\d{9}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _ID_CARD_RE = re.compile(r"\b\d{17}[\dXx]\b")

@@ -13,6 +13,7 @@ api_server.py：SmartVoyage REST API 服务，提供用户认证和会话管理�
 """
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import asyncio
@@ -21,26 +22,33 @@ import os
 import threading
 import time
 import uuid
+from typing import Optional
 
 import httpx
-from typing import Optional
-from fastapi import FastAPI, HTTPException, Header, Depends, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from core.create_logger import logger
+from python_a2a import A2AClient, Message, MessageRole, Task, TextContent
+
 from backend.auth import (
-    register_user, login_user, verify_token,
-    create_session, load_session_messages,
-    list_user_sessions, list_user_orders, cancel_order, session_belongs_to_user,
-    session_exists
+    cancel_order,
+    create_session,
+    list_user_orders,
+    list_user_sessions,
+    load_session_messages,
+    login_user,
+    register_user,
+    session_belongs_to_user,
+    session_exists,
+    verify_token,
 )
 from backend.chat_service import AGENT_URLS, SmartVoyageChatService
 from core.config import Config
-from python_a2a import A2AClient, Message, TextContent, MessageRole, Task
+from core.create_logger import logger
 from utils.china_cities import PROVINCE_CITIES
 from utils.db import get_connection
 from utils.request_id import strip_request_prefix

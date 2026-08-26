@@ -1,9 +1,10 @@
 import asyncio
 import uuid
 
-from python_a2a import A2AClient, Message, TextContent, MessageRole, Task
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from python_a2a import A2AClient, Message, MessageRole, Task, TextContent
+
 from core.config import Config
 from core.create_logger import logger
 

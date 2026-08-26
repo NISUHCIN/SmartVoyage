@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from backend.api_server import app
 
-
 client = TestClient(app)
 
 for message in ["北京三日游", "云南五日游"]:

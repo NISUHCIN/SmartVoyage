@@ -7,23 +7,34 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from typing import Any
-import json
 import asyncio
-import uuid
-import threading
+import json
 import re
-import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-
-from python_a2a import A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState, A2AClient, Message, TextContent, MessageRole, Task
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from datetime import datetime, timedelta
+from typing import Any
+
 import pytz
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from python_a2a import (
+    A2AClient,
+    A2AServer,
+    AgentCard,
+    AgentSkill,
+    Message,
+    MessageRole,
+    Task,
+    TaskState,
+    TaskStatus,
+    TextContent,
+    run_server,
+)
+
 from core.config import Config
 from core.create_logger import logger
-from utils.china_cities import detect_city, expand_province_to_capital, get_all_cities
+from utils.china_cities import expand_province_to_capital, get_all_cities
 from utils.request_id import extract_request_id, strip_request_prefix
 from utils.streaming import chunk_text
 

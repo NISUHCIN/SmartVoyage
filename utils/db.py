@@ -5,7 +5,6 @@ import mysql.connector
 
 from core.config import Config
 
-
 _conf = Config()
 _pool = None
 _pool_lock = threading.Lock()

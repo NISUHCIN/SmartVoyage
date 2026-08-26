@@ -3,18 +3,21 @@ mcp_weather_server.py：天气查询 MCP 服务器，提供参数化查询接口
 """
 import sys
 from pathlib import Path
+
 sys.path.append(str(Path(__file__).parent.parent))
 
 import json
-from typing import Optional
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Optional
+
 from mcp.server.fastmcp import FastMCP
+
 from core.config import Config
 from core.create_logger import logger
+from utils.db import get_connection
 from utils.format import DateEncoder, default_encoder
 from utils.query_builders import build_weather_query
-from utils.db import get_connection
 
 conf = Config()
 

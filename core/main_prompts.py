@@ -1,7 +1,8 @@
-﻿from typing import Any
-import logging
+﻿import logging
+from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
+
 logger = logging.getLogger(__name__)
 
 

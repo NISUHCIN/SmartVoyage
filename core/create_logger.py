@@ -1,6 +1,6 @@
-from typing import Any
 import logging
 import os
+from typing import Any
 
 from core.config import Config
 

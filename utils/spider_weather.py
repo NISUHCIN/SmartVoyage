@@ -1,17 +1,18 @@
-from typing import Any
-import logging
-
-import requests
-import mysql.connector
-from datetime import datetime, timedelta
-import schedule
-import time
-import json
 import gzip
+import json
+import logging
+import time
+from datetime import datetime, timedelta
+from typing import Any
+
+import mysql.connector
 import pytz
+import requests
+import schedule
 from qianfan.trainer.configs import last_update_time
 
 from core.config import Config
+
 logger = logging.getLogger(__name__)
 
 conf = Config()
@@ -259,6 +260,7 @@ if __name__ == '__main__':
     conn.close()
 
     from datetime import datetime, timedelta
+
     import pytz
 
     # 设置时区

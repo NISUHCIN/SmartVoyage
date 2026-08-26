@@ -6,27 +6,25 @@
 import asyncio
 import json
 import re
+import sys
 import threading
 import time
 import uuid
-from typing import Any
 from datetime import datetime
-
-import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytz
 from langchain_openai import ChatOpenAI
-from python_a2a import A2AClient, AgentNetwork, Message, TextContent, MessageRole, Task
+from python_a2a import A2AClient, AgentNetwork, Message, MessageRole, Task, TextContent
 
+from backend.auth import load_session_messages, save_message, session_exists
 from core.config import Config
 from core.create_logger import logger
 from core.main_prompts import SmartVoyagePrompts
-from backend.auth import load_session_messages, save_message, session_exists
 from utils.redact import redact_sensitive
-
 
 _service_conf = Config()
 AGENT_URLS = {

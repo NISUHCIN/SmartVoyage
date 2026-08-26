@@ -7,12 +7,13 @@ amap_api.py：高德地图 API 搜索模块。
 """
 import sys
 from pathlib import Path
+
 sys.path.append(str(Path(__file__).parent.parent))
 
 import os
-import json
+
 import requests
-from typing import Optional
+
 from core.create_logger import logger
 
 AMAP_KEY = os.getenv("AMAP_API_KEY", "")

@@ -6,26 +6,35 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from typing import Any
-import json
 import asyncio
+import json
 import re
 import uuid
+from datetime import datetime
+from typing import Any
 
+import pytz
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-from python_a2a import A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState, \
-    Task, Message, TextContent, MessageRole
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from datetime import datetime
-import pytz
+from python_a2a import (
+    A2AServer,
+    AgentCard,
+    AgentSkill,
+    Message,
+    Task,
+    TaskState,
+    TaskStatus,
+    run_server,
+)
+
 from core.config import Config
 from core.create_logger import logger
 from utils.mock_travel_provider import extract_route, format_train_rows, query_trains
+from utils.redact import redact_sensitive
 from utils.request_id import extract_request_id, strip_request_prefix
 from utils.streaming import chunk_text
-from utils.redact import redact_sensitive
 
 conf = Config()
 

@@ -8,10 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 
-from backend.api_server import app
 import backend.api_server as api_server
+from backend.api_server import app
 from backend.auth import create_token
-from backend import chat_service
 
 
 class _FakeA2AResult:

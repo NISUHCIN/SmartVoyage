@@ -6,7 +6,6 @@
 
 import re
 
-
 # 省级行政区 -> 城市列表（含常用地级行政区名称）
 PROVINCE_CITIES: dict[str, list[str]] = {
     "北京市": ["北京"],

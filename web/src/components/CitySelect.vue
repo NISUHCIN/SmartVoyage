@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { getCities } from '../api'
 
-const props = defineProps({
+defineProps({
   modelValue: { type: String, default: '' }
 })
 const emit = defineEmits(['update:modelValue'])

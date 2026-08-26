@@ -6,24 +6,33 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from typing import Any
-import json
 import asyncio
+import json
 import os
 import re
-import requests
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta
+from typing import Any
 
 import pytz
+import requests
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-from python_a2a import A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState, \
-    Task, Message, TextContent, MessageRole
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
+from python_a2a import (
+    A2AServer,
+    AgentCard,
+    AgentSkill,
+    Message,
+    Task,
+    TaskState,
+    TaskStatus,
+    run_server,
+)
+
 from core.config import Config
 from core.create_logger import logger
 from utils.china_cities import detect_city
