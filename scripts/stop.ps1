@@ -35,15 +35,15 @@ function Get-Port([string]$Key, [int]$Default) {
 
 # 需要关闭的端口列表
 $Ports = @(
-    Get-Port 'MCP_TICKET_PORT' 8001,
-    Get-Port 'MCP_WEATHER_PORT' 8002,
-    Get-Port 'MCP_ORDER_PORT' 8003,
-    Get-Port 'MCP_HOTEL_PORT' 8004,
-    Get-Port 'A2A_WEATHER_PORT' 5005,
-    Get-Port 'A2A_TICKET_PORT' 5006,
-    Get-Port 'A2A_ORDER_PORT' 5007,
-    Get-Port 'A2A_HOTEL_PORT' 5008,
-    Get-Port 'A2A_ITINERARY_PORT' 5009,
+    (Get-Port 'MCP_TICKET_PORT' 8001),
+    (Get-Port 'MCP_WEATHER_PORT' 8002),
+    (Get-Port 'MCP_ORDER_PORT' 8003),
+    (Get-Port 'MCP_HOTEL_PORT' 8004),
+    (Get-Port 'A2A_WEATHER_PORT' 5005),
+    (Get-Port 'A2A_TICKET_PORT' 5006),
+    (Get-Port 'A2A_ORDER_PORT' 5007),
+    (Get-Port 'A2A_HOTEL_PORT' 5008),
+    (Get-Port 'A2A_ITINERARY_PORT' 5009),
     8080, 5173
 )
 
