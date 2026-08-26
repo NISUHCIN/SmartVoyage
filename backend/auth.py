@@ -349,7 +349,7 @@ def cancel_order(order_no: str, user_id: int) -> Tuple[bool, str]:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT * FROM orders WHERE order_no = %s AND user_id = %s",
+            "SELECT * FROM orders WHERE order_no = %s AND user_id = %s FOR UPDATE",
             (order_no, user_id)
         )
         order = cursor.fetchone()

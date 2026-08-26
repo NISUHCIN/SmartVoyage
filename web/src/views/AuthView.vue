@@ -15,7 +15,7 @@ const error = ref('')
 const loading = ref(false)
 
 function saveAuth(data) {
-  setAuth(data.token, data.username || username.value)
+  setAuth(data.username || username.value)
   router.push('/orders')
 }
 

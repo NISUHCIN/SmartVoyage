@@ -34,6 +34,12 @@ services:
     environment:
       DB_HOST: mysql
     command: python mcp_servers/mcp_ticket_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8001), 2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       mysql:
         condition: service_healthy
@@ -46,6 +52,12 @@ services:
     environment:
       DB_HOST: mysql
     command: python mcp_servers/mcp_weather_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8002), 2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       mysql:
         condition: service_healthy
@@ -58,6 +70,12 @@ services:
     environment:
       DB_HOST: mysql
     command: python mcp_servers/mcp_order_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8003), 2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       mysql:
         condition: service_healthy
@@ -70,6 +88,12 @@ services:
     environment:
       DB_HOST: mysql
     command: python mcp_servers/mcp_hotel_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8004), 2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       mysql:
         condition: service_healthy
@@ -84,8 +108,15 @@ services:
       DB_HOST: mysql
       MCP_WEATHER_URL: http://mcp-weather:8002/mcp
     command: python agents/weather_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5005/agent.json', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
-      - mcp-weather
+      mcp-weather:
+        condition: service_healthy
 
   a2a-ticket:
     build: .
@@ -96,8 +127,15 @@ services:
       DB_HOST: mysql
       MCP_TICKET_URL: http://mcp-ticket:8001/mcp
     command: python agents/ticket_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5006/agent.json', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
-      - mcp-ticket
+      mcp-ticket:
+        condition: service_healthy
 
   a2a-order:
     build: .
@@ -109,9 +147,17 @@ services:
       MCP_ORDER_URL: http://mcp-order:8003/mcp
       A2A_TICKET_URL: http://a2a-ticket:5006
     command: python agents/order_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5007/agent.json', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
-      - a2a-ticket
-      - mcp-order
+      a2a-ticket:
+        condition: service_healthy
+      mcp-order:
+        condition: service_healthy
 
   a2a-hotel:
     build: .
@@ -122,8 +168,15 @@ services:
       DB_HOST: mysql
       MCP_HOTEL_URL: http://mcp-hotel:8004/mcp
     command: python agents/hotel_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5008/agent.json', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
-      - mcp-hotel
+      mcp-hotel:
+        condition: service_healthy
 
   a2a-itinerary:
     build: .
@@ -136,10 +189,19 @@ services:
       A2A_TICKET_URL: http://a2a-ticket:5006
       A2A_HOTEL_URL: http://a2a-hotel:5008
     command: python agents/itinerary_server.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5009/agent.json', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
-      - a2a-weather
-      - a2a-ticket
-      - a2a-hotel
+      a2a-weather:
+        condition: service_healthy
+      a2a-ticket:
+        condition: service_healthy
+      a2a-hotel:
+        condition: service_healthy
 
   # ---------- API 服务 ----------
   api-server:
@@ -157,19 +219,25 @@ services:
     command: python backend/api_server.py
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       mysql:
         condition: service_healthy
       a2a-weather:
-        condition: service_started
+        condition: service_healthy
       a2a-ticket:
-        condition: service_started
+        condition: service_healthy
       a2a-order:
-        condition: service_started
+        condition: service_healthy
       a2a-hotel:
-        condition: service_started
+        condition: service_healthy
       a2a-itinerary:
-        condition: service_started
+        condition: service_healthy
 
   # ---------- 前端 ----------
   frontend:
@@ -184,8 +252,15 @@ services:
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     ports:
       - "5173:5173"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5173", ">", "/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
-      - api-server
+      api-server:
+        condition: service_healthy
 
 volumes:
   mysql_data:

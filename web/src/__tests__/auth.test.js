@@ -8,7 +8,7 @@ describe('auth storage', () => {
   })
 
   it('stores username in sessionStorage only', () => {
-    setAuth('token-123', 'tester')
+    setAuth('tester')
     expect(sessionStorage.getItem('sv_username')).toBe('tester')
     expect(sessionStorage.getItem('sv_token')).toBeNull()
     expect(getUsername()).toBe('tester')
@@ -16,7 +16,7 @@ describe('auth storage', () => {
 
   it('clearAuth removes both storages', () => {
     localStorage.setItem('sv_token', 'legacy-token')
-    setAuth('token', 'tester')
+    setAuth('tester')
     clearAuth()
     expect(getUsername()).toBe('')
     expect(sessionStorage.getItem('sv_token')).toBeNull()

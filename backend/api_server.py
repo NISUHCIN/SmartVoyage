@@ -40,12 +40,20 @@ from backend.chat_service import AGENT_URLS, SmartVoyageChatService
 from core.config import Config
 from python_a2a import A2AClient, Message, TextContent, MessageRole, Task
 from utils.china_cities import PROVINCE_CITIES
+from utils.db import get_connection
+from utils.request_id import strip_request_prefix
 
 app = FastAPI(title="SmartVoyage API", version="2.0.0")
 
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
@@ -109,8 +117,8 @@ class AgentRequest(BaseModel):
 
 _conf = Config()
 
-if _conf.jwt_secret == "smartvoyage-dev-secret-change-in-production":
-    logger.warning("JWT_SECRET 仍为默认开发密钥，生产环境请务必覆盖。")
+if _conf.jwt_secret == "smartvoyage-dev-secret-change-in-production" or len(_conf.jwt_secret) < 32:
+    logger.warning("JWT_SECRET 强度不足或仍为默认值，生产环境请使用至少 32 位随机密钥。")
 
 _rate_lock = threading.Lock()
 _rate_attempts: dict[str, list[float]] = {}
@@ -181,7 +189,8 @@ def _get_agent_client(endpoint: str) -> A2AClient:
 
 async def call_agent_direct(endpoint: str, message: str, request_id: str = "",
                             cacheable: bool = True) -> tuple[str, object]:
-    key = (endpoint, message)
+    cache_message = strip_request_prefix(message)
+    key = (endpoint, cache_message)
     if cacheable:
         with _direct_cache_lock:
             cached = _direct_cache.get(key)
@@ -190,7 +199,7 @@ async def call_agent_direct(endpoint: str, message: str, request_id: str = "",
 
     client = _get_agent_client(endpoint)
     if request_id:
-        client = A2AClient(endpoint, timeout=90, headers={"X-Request-ID": request_id})
+        message = f"[请求ID: {request_id}]\n{message}"
     task = Task(
         id="api-" + uuid.uuid4().hex,
         message=Message(content=TextContent(text=message), role=MessageRole.USER).to_dict(),
@@ -260,9 +269,12 @@ async def register(req: RegisterRequest, request: Request):
     success, msg, data = register_user(req.username, req.password, req.email, req.phone)
     if not success:
         raise HTTPException(400, msg)
+    token = (data or {}).get("token")
+    if token:
+        data = {k: v for k, v in data.items() if k != "token"}
     response = JSONResponse({"code": 0, "message": msg, "data": data})
-    if data and data.get("token"):
-        _set_auth_cookie(response, data["token"])
+    if token:
+        _set_auth_cookie(response, token)
     return response
 
 
@@ -274,9 +286,12 @@ async def login(req: LoginRequest, request: Request):
     success, msg, data = login_user(req.username, req.password)
     if not success:
         raise HTTPException(401, msg)
+    token = (data or {}).get("token")
+    if token:
+        data = {k: v for k, v in data.items() if k != "token"}
     response = JSONResponse({"code": 0, "message": msg, "data": data})
-    if data and data.get("token"):
-        _set_auth_cookie(response, data["token"])
+    if token:
+        _set_auth_cookie(response, token)
     return response
 
 
@@ -329,9 +344,40 @@ async def cancel_user_order(req: CancelOrderRequest, user_id: int = Depends(auth
     return {"code": 0, "message": msg}
 
 
+async def _db_ok() -> bool:
+    """MySQL 连通性检查"""
+    try:
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+            return True
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+async def _probe_agents() -> dict:
+    results = await asyncio.gather(*(_agent_is_online(url) for url in AGENT_URLS.values()))
+    return {"online": sum(1 for ok in results if ok), "total": len(results)}
+
+
 @app.get("/api/health")
 async def health():
-    return {"code": 0, "status": "ok", "service": "SmartVoyage API v2.0"}
+    db_status = "ok" if await _db_ok() else "error"
+    try:
+        agents = await asyncio.wait_for(_probe_agents(), timeout=2.0)
+    except asyncio.TimeoutError:
+        agents = {"online": 0, "total": len(AGENT_URLS)}
+    return {
+        "code": 0,
+        "status": "ok",
+        "service": "SmartVoyage API v2.0",
+        "db": db_status,
+        "agents": agents,
+    }
 
 
 @app.get("/api/cities")

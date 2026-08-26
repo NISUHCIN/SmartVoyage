@@ -39,9 +39,14 @@ class ApiServerTest(unittest.TestCase):
         api_server._chat_service = self._real_service
 
     def test_health(self):
-        res = self.client.get("/api/health")
+        with mock.patch.object(api_server, "_db_ok", new=mock.AsyncMock(return_value=True)), \
+                mock.patch.object(api_server, "_agent_is_online", return_value=False):
+            res = self.client.get("/api/health")
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["code"], 0)
+        body = res.json()
+        self.assertEqual(body["code"], 0)
+        self.assertEqual(body["db"], "ok")
+        self.assertEqual(body["agents"], {"online": 0, "total": 5})
 
     def test_cities(self):
         res = self.client.get("/api/cities")
@@ -175,6 +180,16 @@ def test_call_agent_direct_only_caches_cacheable_requests():
         asyncio.run(api_server.call_agent_direct("ep-cache", "同一条查询"))
         asyncio.run(api_server.call_agent_direct("ep-cache", "同一条查询", cacheable=False))
     assert client.calls == 2
+    api_server._direct_cache.clear()
+
+
+def test_call_agent_direct_reuses_client_and_strips_request_id_from_cache_key():
+    api_server._direct_cache.clear()
+    client = _FakeA2AClient()
+    with mock.patch.object(api_server, "_get_agent_client", return_value=client):
+        asyncio.run(api_server.call_agent_direct("ep-reuse", "北京天气", request_id="rid-1"))
+        asyncio.run(api_server.call_agent_direct("ep-reuse", "北京天气", request_id="rid-2"))
+    assert client.calls == 1
     api_server._direct_cache.clear()
 
 
