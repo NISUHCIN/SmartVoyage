@@ -64,11 +64,18 @@ def format_train_rows(rows: list[dict]) -> str:
     """把模拟班次转成与本地票务 Agent 相同的文本格式。"""
     lines = []
     for row in rows:
+        price = row.get("price")
+        price_part = f"票价 {price}元" if price is not None else "票价以12306为准"
+        remaining_seats = row.get("remaining_seats")
+        if remaining_seats is not None:
+            remaining_part = f"剩余 {remaining_seats} 张"
+        else:
+            remaining_part = row.get("remaining_text", "余票以12306为准")
         lines.append(
             f"{row['departure_city']} 到 {row['arrival_city']} "
             f"{row['departure_time']} {row['arrival_time']}: "
             f"车次 {row['train_number']}，{row['seat_type']}，"
-            f"票价 {row['price']}元，剩余 {row['remaining_seats']} 张"
+            f"{price_part}，{remaining_part}"
         )
     return "\n".join(lines)
 

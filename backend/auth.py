@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import hashlib
 import hmac
+import json
 import os
 import time
 import uuid
@@ -21,6 +22,7 @@ from typing import Optional, Tuple
 
 import jwt
 
+from backend.virtual_bookings import release_by_order_no
 from core.config import Config
 from core.create_logger import logger
 from utils.db import get_connection
@@ -333,7 +335,19 @@ def list_user_orders(user_id: int) -> list:
             "SELECT * FROM orders WHERE user_id = %s ORDER BY created_at DESC",
             (user_id,)
         )
-        return cursor.fetchall()
+        rows = cursor.fetchall()
+        for row in rows:
+            raw = row.get("item_desc")
+            item = None
+            if isinstance(raw, str) and raw:
+                try:
+                    item = json.loads(raw)
+                except json.JSONDecodeError:
+                    item = {"raw": raw}
+            elif isinstance(raw, dict):
+                item = raw
+            row["item"] = item
+        return rows
     except Exception as e:
         logger.error(f"列出订单失败: {e}")
         return []
@@ -380,6 +394,7 @@ def cancel_order(order_no: str, user_id: int) -> Tuple[bool, str]:
                 (order['quantity'], order['item_id'])
             )
         conn.commit()
+        release_by_order_no(order_no)
         return True, "订单已取消"
     except Exception as e:
         if conn:

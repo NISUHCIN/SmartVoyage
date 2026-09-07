@@ -18,52 +18,29 @@ import requests
 
 from core.config import Config
 from core.create_logger import logger
+from utils.weather_resolver import get_weather_location
 
 conf = Config()
 
-BASE_URL = "https://j246h349g7.re.qweatherapi.com/v7/weather/7d"
-GEO_URL = "https://j246h349g7.re.qweatherapi.com/geo/v2/city/lookup"
 
-# 常用城市 LocationID 映射（可扩展）
-CITY_LOCATION_MAP = {
-    "北京": "101010100",
-    "上海": "101020100",
-    "广州": "101280101",
-    "深圳": "101280601",
-    "杭州": "101210101",
-    "成都": "101270101",
-    "西安": "101110101",
-    "重庆": "101040100",
-    "武汉": "101200101",
-    "南京": "101190101",
-}
+def _qweather_base() -> str:
+    """读取 .env 的 QWEATHER_API_HOST，并自动补齐 https:// 前缀。"""
+    host = (conf.qweather_api_host or "j246h349g7.re.qweatherapi.com").strip().rstrip("/")
+    if not host.startswith(("http://", "https://")):
+        host = "https://" + host
+    return host
+
+
+BASE_URL = f"{_qweather_base()}/v7/weather/7d"
 
 
 def _get_location_id(city: str) -> Optional[str]:
-    """通过城市名查询 LocationID"""
-    if city in CITY_LOCATION_MAP:
-        return CITY_LOCATION_MAP[city]
-
-    if not conf.weather_api_key:
-        logger.warning("未配置 WEATHER_API_KEY，无法查询新城市")
+    """通过离线 LocationID/经纬度解析和风天气位置。"""
+    location = get_weather_location(city)
+    if not location:
+        logger.warning(f"无法解析城市天气位置: {city}")
         return None
-
-    try:
-        resp = requests.get(
-            GEO_URL,
-            params={"location": city},
-            headers={"X-QW-Api-Key": conf.weather_api_key},
-            timeout=10
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("code") == "200" and data.get("location"):
-            location_id = data["location"][0]["id"]
-            CITY_LOCATION_MAP[city] = location_id
-            return location_id
-    except Exception as e:
-        logger.error(f"查询城市LocationID失败: {e}")
-    return None
+    return location.get("id") or location.get("coordinate")
 
 
 def fetch_and_cache_weather(city: str) -> dict:
@@ -88,14 +65,18 @@ def fetch_and_cache_weather(city: str) -> dict:
         )
         resp.raise_for_status()
         data = resp.json()
+    except Exception as e:
+        logger.error(f"拉取天气数据失败: {e}")
+        return {"status": "error", "message": str(e)}
 
-        if data.get("code") != "200":
-            return {"status": "error", "message": f"天气API返回错误: {data.get('code')}"}
+    if data.get("code") != "200":
+        return {"status": "error", "message": f"天气API返回错误: {data.get('code')}"}
 
-        daily = data.get("daily", [])
-        update_time = data.get("updateTime", datetime.now().isoformat())
+    daily = data.get("daily", [])
+    update_time = data.get("updateTime", datetime.now().isoformat())
 
-        # 写入数据库缓存
+    # 写入数据库缓存；数据库不可用时仍返回真实数据，由上层决定降级。
+    try:
         import mysql.connector
         conn = mysql.connector.connect(
             host=conf.host, user=conf.user, password=conf.password,
@@ -147,8 +128,6 @@ def fetch_and_cache_weather(city: str) -> dict:
         conn.close()
 
         logger.info(f"天气数据已缓存: {city} {len(daily)}天")
-        return {"status": "success", "data": daily}
-
     except Exception as e:
-        logger.error(f"拉取天气数据失败: {e}")
-        return {"status": "error", "message": str(e)}
+        logger.warning(f"天气数据写入数据库缓存失败，仍返回真实数据: {e}")
+    return {"status": "success", "data": daily}

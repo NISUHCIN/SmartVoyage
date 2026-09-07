@@ -27,7 +27,7 @@ export const getCities = () => request('/api/cities')
 export const getAgents = () => request('/api/agents')
 export const sendChat = (message, sessionId) =>
   request('/api/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId }) })
-export async function sendChatStream(message, sessionId, onDelta) {
+export async function sendChatStream(message, sessionId, onDelta, onEvent) {
   const headers = { 'Content-Type': 'application/json', 'X-Request-ID': makeRequestId() }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 120000)
@@ -60,6 +60,7 @@ export async function sendChatStream(message, sessionId, onDelta) {
         const payload = JSON.parse(line.slice(6))
         if (payload.session_id) returnedSessionId = payload.session_id
         if (payload.delta) onDelta(payload.delta)
+        if (onEvent) onEvent(payload)
       }
     }
     return { session_id: returnedSessionId }
@@ -76,6 +77,25 @@ export const queryTicket = (message) =>
   request('/api/ticket', { method: 'POST', body: JSON.stringify({ message }) })
 export const queryTicketOrder = (message) =>
   request('/api/ticket-order', { method: 'POST', body: JSON.stringify({ message }) })
+export const searchTrains = (payload) =>
+  request('/api/trains/search', { method: 'POST', body: JSON.stringify(payload) })
+export const bookTrain = (payload) =>
+  request('/api/orders/train', { method: 'POST', body: JSON.stringify(payload) })
+export const demoLogin = () =>
+  request('/api/demo/login', { method: 'POST' })
+export const searchHotels = (payload) =>
+  request('/api/hotels/search', { method: 'POST', body: JSON.stringify(payload) })
+export const getHotelRooms = (payload) =>
+  request('/api/hotels/rooms', { method: 'POST', body: JSON.stringify(payload) })
+export const bookHotel = (payload) =>
+  request('/api/orders/hotel', { method: 'POST', body: JSON.stringify(payload) })
+export const searchWeatherStructured = (payload) =>
+  request('/api/weather/search', { method: 'POST', body: JSON.stringify(payload) })
+export const getDemoStatus = () => request('/api/demo/status')
+export const resetDemo = (payload = {}) =>
+  request('/api/demo/reset', { method: 'POST', body: JSON.stringify(payload) })
+export const getSessionMemory = (sessionId) => request(`/api/session-memory/${sessionId}`)
+export const getTraces = (limit = 30) => request(`/api/trace?limit=${limit}`)
 export const queryHotel = (message) =>
   request('/api/hotel', { method: 'POST', body: JSON.stringify({ message }) })
 export const queryItinerary = (message) =>

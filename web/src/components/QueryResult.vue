@@ -48,10 +48,15 @@ const LABELS = {
   weather: '天气',
   transport: '交通',
   hotel: '住宿',
-  attractions: '景点'
+  attractions: '景点',
+  source: '数据源',
+  remaining_text: '余票说明',
+  train_type: '类型'
 }
 
-const columns = computed(() => (props.rows && props.rows.length ? Object.keys(props.rows[0]) : []))
+const columns = computed(() =>
+  props.rows && props.rows.length ? Object.keys(props.rows[0]).filter((key) => !key.startsWith('_')) : []
+)
 
 function label(key) {
   return LABELS[key] || key
@@ -61,6 +66,12 @@ function cell(row, key) {
   const value = row[key]
   if (key === 'has_breakfast' || key === 'has_wifi' || key === 'has_parking') {
     return value ? '有' : '无'
+  }
+  if (key === 'price' && (value === null || value === undefined)) {
+    return '实时价'
+  }
+  if (key === 'remaining_seats' && (value === null || value === undefined)) {
+    return row.remaining_text || '余票'
   }
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
     return value.slice(0, 16)

@@ -36,9 +36,9 @@ from python_a2a import (
 from core.config import Config
 from core.create_logger import logger
 from utils.china_cities import detect_city
-from utils.qweather_cities import CITY_IDS
 from utils.request_id import extract_request_id, strip_request_prefix
 from utils.streaming import chunk_text
+from utils.weather_resolver import get_weather_location
 
 conf = Config()
 
@@ -73,14 +73,15 @@ def fetch_qweather(city: str) -> str | None:
     """调用和风天气真实接口（7 天预报，取前 5 天），失败返回 None。"""
     host = conf.qweather_api_host
     key = conf.weather_api_key
-    location_id = CITY_IDS.get(city)
-    if not host or not key or not location_id:
+    location = get_weather_location(city)
+    if not host or not key or not location:
         return None
     base = f"https://{host}" if not host.startswith("http") else host
+    location_param = location.get("coordinate") or location.get("id")
     try:
         response = requests.get(
             f"{base}/v7/weather/7d",
-            params={"location": location_id, "key": key},
+            params={"location": location_param, "key": key},
             timeout=10,
         )
         data = response.json()

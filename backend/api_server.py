@@ -1,7 +1,13 @@
-﻿"""
-api_server.py：SmartVoyage REST API 服务，提供用户认证和会话管理接口。
+"""
+api_server.py：SmartVoyage REST API 服务（FastAPI v2.0），完整接口清单见根目录 CLAUDE.md 第 7 节。
 
-核心接口：
+接口模块：
+- 认证与会话、对话流式接口
+- 天气/票务/酒店/行程直连查询与结构化搜索
+- 火车/酒店沙箱下单
+- 执行轨迹、会话记忆与演示环境
+
+早期核心接口（仍保留）：
     POST /api/register       - 用户注册
     POST /api/login          - 用户登录
     GET  /api/sessions       - 获取用户会话列表
@@ -47,11 +53,34 @@ from backend.auth import (
     verify_token,
 )
 from backend.chat_service import AGENT_URLS, SmartVoyageChatService
+from backend.demo_reset import (
+    demo_environment_stats,
+    reset_demo_environment,
+)
+from backend.session_memory import (
+    delete_session_memory,
+    load_session_memory,
+    memory_chips,
+)
+from backend.trace_store import record_trace
+from backend.virtual_bookings import (
+    apply_virtual_occupancy,
+    create_virtual_hotel_order,
+    create_virtual_train_order,
+)
 from core.config import Config
 from core.create_logger import logger
 from utils.china_cities import PROVINCE_CITIES
 from utils.db import get_connection
+from utils.hotel_provider import (
+    get_hotel_rooms_structured,
+    search_hotels_structured,
+)
+from utils.mock_travel_provider import query_trains
+from utils.query_builders import build_weather_query
 from utils.request_id import strip_request_prefix
+from utils.train_api_aliyun import AliyunTrainAPIError, query_train_tickets
+from utils.weather_api import fetch_and_cache_weather
 
 app = FastAPI(title="SmartVoyage API", version="2.0.0")
 
@@ -139,6 +168,58 @@ class ChatRequest(BaseModel):
 
 class AgentRequest(BaseModel):
     message: str
+
+
+class TrainSearchRequest(BaseModel):
+    departure_city: str
+    arrival_city: str
+    travel_date: str
+    seat_type: Optional[str] = None
+
+
+class TrainOrderRequest(BaseModel):
+    train: dict
+    passenger_name: str
+    contact_phone: str
+    quantity: int = 1
+
+
+class HotelSearchRequest(BaseModel):
+    city: str
+    district: Optional[str] = None
+    keyword: Optional[str] = None
+    check_in: Optional[str] = None
+    nights: int = 1
+    adults: int = 2
+    budget: Optional[float] = None
+
+
+class HotelRoomsRequest(BaseModel):
+    hotel: dict
+    check_in: Optional[str] = None
+    nights: int = 1
+    adults: int = 2
+    rooms: int = 1
+
+
+class HotelOrderRequest(BaseModel):
+    hotel: dict
+    room: dict
+    check_in: str
+    nights: int = 1
+    rooms: int = 1
+    guest_name: str
+    contact_phone: str
+
+
+class DemoResetRequest(BaseModel):
+    session_id: Optional[str] = None
+
+
+class WeatherSearchRequest(BaseModel):
+    city: str
+    date: Optional[str] = None
+    days: int = 5
 
 
 _conf = Config()
@@ -377,6 +458,7 @@ async def _db_ok() -> bool:
         try:
             cur = conn.cursor()
             cur.execute("SELECT 1")
+            cur.fetchone()
             cur.close()
             return True
         finally:
@@ -515,6 +597,24 @@ async def _agent_is_online(url: str) -> bool:
         return False
 
 
+def _weather_rows_from_db(city: str, start_date: str, end_date: str) -> list:
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        sql, params = build_weather_query(city, start_date, end_date)
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        cursor.close()
+        return rows
+    except Exception as exc:
+        logger.warning(f"读取本地天气兜底失败: {exc}")
+        return []
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
 @app.post("/api/weather")
 async def weather(req: AgentRequest, request: Request):
     reply, data = await call_agent_direct(
@@ -559,6 +659,310 @@ async def itinerary(req: AgentRequest, request: Request):
         AGENT_DIRECT_URLS["itinerary"], req.message, request_id=request.state.request_id
     )
     return {"code": 0, "data": {"reply": reply, "data": data}}
+
+
+@app.post("/api/demo/login")
+async def demo_login():
+    """面试演示账号：首次运行自动注册，之后直接登录。"""
+    username = "demo_user"
+    password = "SmartVoyageDemo@2026"
+    ok, message, payload = login_user(username, password)
+    if not ok:
+        ok, message, payload = register_user(username, password)
+    if not ok:
+        raise HTTPException(400, message)
+    response = JSONResponse(
+        {"code": 0, "data": {"username": username, "mode": "interview_demo"}}
+    )
+    _set_auth_cookie(response, payload["token"])
+    return response
+
+
+@app.post("/api/trains/search")
+async def trains_search(req: TrainSearchRequest, request: Request):
+    """真实余票查询；真实票源无数据时降级本地演示班次，避免查询页空白。"""
+    started = time.perf_counter()
+    status = "ok"
+    degraded = False
+    fallback_message = ""
+    try:
+        rows = query_train_tickets(
+            req.departure_city,
+            req.arrival_city,
+            req.travel_date,
+            seat_type=req.seat_type,
+            request_id=request.state.request_id,
+        )
+    except AliyunTrainAPIError as exc:
+        logger.error(f"真实票源查询失败: {exc}")
+        fallback_message = str(exc)
+        rows = []
+    if not rows:
+        rows = query_trains(req.departure_city, req.arrival_city, req.travel_date)
+        if req.seat_type:
+            rows = [row for row in rows if row["seat_type"] == req.seat_type]
+        if rows:
+            for row in rows:
+                row["source"] = "本地演示数据"
+                row["_provider"] = "demo"
+            degraded = True
+            status = "warn"
+            fallback_message = fallback_message or "真实票源暂无可订余票，已展示本地演示班次。"
+    apply_virtual_occupancy(rows)
+    source = (
+        str(rows[0].get("source") or "聚美智数/阿里云")
+        if rows
+        else (
+            "真实票源暂无结果"
+        )
+    )
+    record_trace(
+        kind="train_direct",
+        message=f"{req.departure_city} → {req.arrival_city} {req.travel_date} {req.seat_type or ''}",
+        steps=[{
+            "step": "真实余票查询",
+            "agent": "TicketQueryAssistant/MCP票务",
+            "status": status,
+            "source": source,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "degraded": degraded,
+        }],
+        status=status,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+    )
+    return {
+        "code": 0,
+        "data": {
+            "rows": rows,
+            "source": source,
+            "message": fallback_message or None,
+            "booking_mode": "virtual_demo",
+            "meta": {
+                "cache_ttl_seconds": 120,
+                "rate_max_per_minute": 12,
+                "degraded": degraded,
+            },
+        },
+    }
+
+
+@app.post("/api/orders/train")
+async def train_order(req: TrainOrderRequest, request: Request):
+    """按真实班次生成沙箱虚拟订单，不产生真实出票。"""
+    payload = _current_user(request)
+    user_id = payload["user_id"] if payload else None
+    ok, message, data = create_virtual_train_order(
+        req.train,
+        req.quantity,
+        user_id,
+        req.passenger_name,
+        req.contact_phone,
+    )
+    if not ok:
+        raise HTTPException(400, message)
+    return {"code": 0, "data": data}
+
+
+@app.get("/api/demo/status")
+async def demo_status():
+    db_ok = await _db_ok()
+    stats = await asyncio.to_thread(demo_environment_stats)
+    rollinggo = bool(
+        Path(__file__).resolve().parent.parent.joinpath(".mcp.json").exists()
+    )
+    return {
+        "code": 0,
+        "data": {
+            "db": db_ok,
+            "agents_configured": len(AGENT_URLS),
+            "rollinggo_configured": rollinggo,
+            "train_source_configured": bool(
+                os.getenv("ALIYUN_APPCODE") and os.getenv("ALIYUN_TRAIN_API_URL")
+            ),
+            "weather_source_configured": bool(
+                os.getenv("WEATHER_API_KEY") and os.getenv("QWEATHER_API_HOST")
+            ),
+            **stats,
+        },
+    }
+
+
+@app.post("/api/demo/reset")
+async def demo_reset(req: DemoResetRequest):
+    result = await asyncio.to_thread(reset_demo_environment)
+    if result.get("status") != "ok":
+        raise HTTPException(400, result.get("message", "演示数据复位失败"))
+    if req.session_id:
+        await asyncio.to_thread(delete_session_memory, req.session_id)
+        result["memory_cleared"] = True
+    return {"code": 0, "message": "沙箱订单已清空，虚拟占用已释放", "data": result}
+
+
+@app.post("/api/hotels/search")
+async def hotels_search(req: HotelSearchRequest, request: Request):
+    """真实酒店搜索（RollingGo），失败降级本地演示房型。"""
+    if not req.city.strip():
+        raise HTTPException(400, "请提供城市")
+    started = time.perf_counter()
+    result = await search_hotels_structured(
+        req.city.strip(),
+        check_in=req.check_in,
+        nights=req.nights,
+        adults=req.adults,
+        district=req.district,
+        room_type=req.keyword,
+        max_price=req.budget,
+        request_id=request.state.request_id,
+    )
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    record_trace(
+        kind="hotel_direct",
+        message=f"{req.city} 酒店 {req.check_in or '未指定日期'} {req.nights}晚",
+        steps=[{
+            "step": "酒店真实搜索",
+            "agent": "HotelQueryAssistant/RollingGo MCP",
+            "status": "ok" if not result.get("degraded") else "warn",
+            "source": result.get("source", ""),
+            "duration_ms": duration_ms,
+            "degraded": bool(result.get("degraded")),
+        }],
+        status="ok" if not result.get("degraded") else "warn",
+        duration_ms=duration_ms,
+    )
+    return {"code": 0, "data": result}
+
+
+@app.post("/api/hotels/rooms")
+async def hotels_rooms(req: HotelRoomsRequest, request: Request):
+    """选中酒店后查询实时房型与价格。"""
+    if not req.hotel:
+        raise HTTPException(400, "请先选择酒店")
+    started = time.perf_counter()
+    result = await get_hotel_rooms_structured(
+        req.hotel,
+        req.check_in or (req.hotel.get("check_in") or ""),
+        req.nights,
+        req.adults,
+        req.rooms,
+        request_id=request.state.request_id,
+    )
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    record_trace(
+        kind="hotel_room_direct",
+        message=f"{req.hotel.get('hotel_name')} 房型查询",
+        steps=[{
+            "step": "酒店房型实时查询",
+            "agent": "HotelQueryAssistant/RollingGo MCP",
+            "status": "ok" if not result.get("degraded") else "warn",
+            "source": result.get("source", ""),
+            "duration_ms": duration_ms,
+            "degraded": bool(result.get("degraded")),
+        }],
+        status="ok" if not result.get("degraded") else "warn",
+        duration_ms=duration_ms,
+    )
+    return {"code": 0, "data": result}
+
+
+@app.post("/api/orders/hotel")
+async def hotel_order(req: HotelOrderRequest, request: Request):
+    """按真实酒店房型生成沙箱虚拟酒店订单。"""
+    if not req.guest_name.strip() or not req.contact_phone.strip():
+        raise HTTPException(400, "请填写入住人姓名和联系电话")
+    if req.nights < 1 or req.rooms < 1:
+        raise HTTPException(400, "入住晚数和房间数至少为 1")
+    payload = _current_user(request)
+    user_id = payload["user_id"] if payload else None
+    ok, message, data = create_virtual_hotel_order(
+        req.hotel,
+        req.room,
+        req.check_in,
+        req.nights,
+        req.rooms,
+        user_id,
+        req.guest_name.strip(),
+        req.contact_phone.strip(),
+    )
+    if not ok:
+        raise HTTPException(400, message)
+    record_trace(
+        kind="hotel_order",
+        message=f"{req.hotel.get('hotel_name')} {req.room.get('room_type')} 沙箱预订",
+        steps=[{
+            "step": "虚拟酒店订单",
+            "agent": "本地沙箱订单服务",
+            "status": "ok",
+            "source": "virtual_demo",
+            "degraded": False,
+            "duration_ms": 0,
+        }],
+    )
+    return {"code": 0, "message": message, "data": data}
+
+
+@app.post("/api/weather/search")
+async def weather_search(req: WeatherSearchRequest, request: Request):
+    """和风天气真实 7 天预报结构化查询，供行程时间线直接渲染。"""
+    city = req.city.strip()
+    if not city:
+        raise HTTPException(400, "请提供城市")
+    started = time.perf_counter()
+    from datetime import date as date_type
+    from datetime import datetime, timedelta
+
+    start = req.date or date_type.today().isoformat()
+    try:
+        start_dt = datetime.strptime(start, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
+    end_dt = start_dt + timedelta(days=max(1, min(int(req.days or 5), 7)) - 1)
+    result = await asyncio.to_thread(fetch_and_cache_weather, city)
+    degraded = result.get("status") != "success"
+    if not degraded:
+        rows = [
+            day for day in (result.get("data") or [])
+            if start_dt <= datetime.strptime(day["fxDate"], "%Y-%m-%d").date() <= end_dt
+        ]
+        source = "和风天气真实接口"
+    else:
+        rows = await asyncio.to_thread(
+            _weather_rows_from_db, city, start_dt.isoformat(), end_dt.isoformat()
+        )
+        source = "本地天气数据"
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    record_trace(
+        kind="weather_direct",
+        message=f"{city} {start_dt} 起 {req.days} 天",
+        steps=[{
+            "step": "结构化天气查询",
+            "agent": "WeatherQueryAssistant/和风天气",
+            "status": "ok" if not degraded else "warn",
+            "source": source,
+            "duration_ms": duration_ms,
+            "degraded": degraded,
+        }],
+        status="ok" if not degraded else "warn",
+        duration_ms=duration_ms,
+    )
+    return {"code": 0, "data": {"rows": rows, "source": source, "degraded": degraded}}
+
+
+@app.get("/api/trace")
+async def trace(limit: int = 50):
+    from backend.trace_store import list_traces
+    return {"code": 0, "data": list_traces(limit)}
+
+
+@app.get("/api/session-memory/{session_id}")
+async def session_memory(session_id: str):
+    memory = await asyncio.to_thread(load_session_memory, session_id)
+    return {
+        "code": 0,
+        "data": {
+            "memory": memory,
+            "chips": memory_chips(memory),
+        },
+    }
 
 
 _WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"

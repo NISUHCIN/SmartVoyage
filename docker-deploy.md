@@ -5,6 +5,14 @@
 - Docker 20.10+
 - Docker Compose 2.0+
 
+## 当前能力
+
+- 天气：和风天气真实接口，城市名通过官方 LocationID + 本地经纬度坐标解析
+- 火车/高铁：可配置聚美智数/阿里云真实余票；未配置或失败时回退 MySQL/模拟数据
+- 酒店：RollingGo MCP 真实搜索与房型查询，失败时回退 MySQL `hotel_rooms`
+- 下单：火车票、酒店均为沙箱演示订单（`virtual_demo`），不产生真实扣款/出票
+- 新增表 `session_memories`、`virtual_train_bookings`：代码运行时会自动创建；已有数据库也可执行 `sql/migrations/` 下的增量 SQL
+
 ## 部署步骤
 
 ### 1. 准备环境配置

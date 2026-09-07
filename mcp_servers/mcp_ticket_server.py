@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 import json
+import os
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -22,6 +23,7 @@ from utils.query_builders import (
     build_flight_query,
     build_train_query,
 )
+from utils.train_api_aliyun import AliyunTrainAPIError, query_train_tickets
 
 conf = Config()
 
@@ -43,7 +45,7 @@ class TicketService:
                     if isinstance(value, (date, datetime, timedelta, Decimal)):
                         result[key] = default_encoder(value)
             return json.dumps(
-                {"status": "success", "data": results} if results
+                {"status": "success", "source": "local_db", "data": results} if results
                 else {"status": "no_data", "message": "未找到票务数据，请确认查询条件。"},
                 cls=DateEncoder, ensure_ascii=False)
         except Exception as e:
@@ -55,6 +57,75 @@ class TicketService:
 
     def query_train(self, departure_city: str, arrival_city: str, travel_date: str,
                     seat_type: Optional[str] = None, request_id: Optional[str] = None) -> str:
+        live_configured = bool(
+            (
+                os.getenv("ALIYUN_TRAIN_API_URL")
+                and os.getenv("ALIYUN_APPCODE")
+            )
+            or (
+                os.getenv("JISU_TRAIN_API_URL")
+                and os.getenv("JISU_APPCODE")
+            )
+        )
+        default_source = "aliyun" if live_configured else "local"
+        source = os.getenv("TRAIN_QUERY_SOURCE", default_source).lower()
+        if source not in ("local", "db", "mysql"):
+            try:
+                live_rows = query_train_tickets(
+                    departure_city,
+                    arrival_city,
+                    travel_date,
+                    seat_type=seat_type,
+                    request_id=request_id,
+                )
+                if live_rows:
+                    provider = str(live_rows[0].get("_provider") or "aliyun")
+                    label = (
+                        "极速数据/阿里云"
+                        if provider == "jisu"
+                        else "聚美智数/阿里云"
+                    )
+                    logger.info(
+                        f"火车票使用{label}真实余票，返回 {len(live_rows)} 行 "
+                        f"rid={request_id or '-'}"
+                    )
+                    return json.dumps(
+                        {"status": "success", "source": provider, "data": live_rows},
+                        ensure_ascii=False,
+                    )
+                last_provider = (
+                    "jisu"
+                    if (
+                        os.getenv("JISU_TRAIN_API_URL")
+                        and os.getenv("JISU_APPCODE")
+                        and not (
+                            os.getenv("ALIYUN_TRAIN_API_URL")
+                            and os.getenv("ALIYUN_APPCODE")
+                        )
+                    )
+                    else "aliyun"
+                )
+                last_label = (
+                    "极速数据/阿里云" if last_provider == "jisu" else "聚美智数/阿里云"
+                )
+                return json.dumps(
+                    {
+                        "status": "no_data",
+                        "source": last_provider,
+                        "message": f"{last_label}暂无符合条件的真实余票，请更换日期或车站后重试。",
+                    },
+                    ensure_ascii=False,
+                )
+            except AliyunTrainAPIError as exc:
+                logger.warning(
+                    f"聚美智数真实票源查询失败，退回策略 source={source}: {exc} "
+                    f"rid={request_id or '-'}"
+                )
+                if source == "aliyun":
+                    return json.dumps(
+                        {"status": "error", "source": "aliyun", "message": str(exc)},
+                        ensure_ascii=False,
+                    )
         sql, params = build_train_query(departure_city, arrival_city, travel_date, seat_type)
         logger.info(f"执行火车票查询: {params} rid={request_id or '-'}")
         return self._execute(sql, params)

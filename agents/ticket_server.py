@@ -203,7 +203,9 @@ class TicketQueryServer(A2AServer):
             logger.info(f"MCP 返回: {response}")
 
             route = extract_route(conversation)
-            if response.get("status") in ("no_data", "error") and route:
+            live_source = response.get("source")
+            is_live = live_source in ("aliyun", "jisu")
+            if response.get("status") in ("no_data", "error") and route and not is_live:
                 mock_rows = query_trains(route[0], route[1], route[2])
                 mock_text = format_train_rows(mock_rows)
                 mock_text += "\n（演示数据，非实时票务）"
@@ -214,7 +216,13 @@ class TicketQueryServer(A2AServer):
 
             if response.get("status") == "success":
                 response_text = format_train_rows(response.get("data", []))
-                response_text += "\n（本地演示数据）"
+                if live_source == "jisu":
+                    source_note = "\n（数据来源：极速数据/阿里云 真实余票接口）"
+                elif is_live:
+                    source_note = "\n（数据来源：聚美智数/阿里云 真实余票接口）"
+                else:
+                    source_note = "\n（本地演示数据）"
+                response_text += source_note
                 task.artifacts = [{"parts": [
                     {"type": "text", "text": response_text},
                     {"type": "text", "text": json.dumps(response.get("data", []), ensure_ascii=False)},

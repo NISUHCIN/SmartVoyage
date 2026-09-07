@@ -35,6 +35,7 @@ from python_a2a import (
 from core.config import Config
 from core.create_logger import logger
 from utils.china_cities import expand_province_to_capital, get_all_cities
+from utils.mock_travel_provider import format_train_rows, query_trains
 from utils.request_id import extract_request_id, strip_request_prefix
 from utils.streaming import chunk_text
 
@@ -159,6 +160,17 @@ def run_async_agent(url: str, query: str, request_id: str = "") -> str:
         return loop.run_until_complete(get_agent_text(url, query, request_id))
     finally:
         loop.close()
+
+
+def _ticket_text_missing(text: str) -> bool:
+    """真实票源返回无车次文本时视为缺票，便于行程层补演示班次。"""
+    return "车次" not in (text or "")
+
+
+def _mock_ticket_text(departure: str, arrival: str, travel_date: str) -> str:
+    rows = query_trains(departure, arrival, travel_date)
+    text = format_train_rows(rows)
+    return text + "\n（演示数据：真实票源暂不可用，班次仅供行程演示）"
 
 
 def _find_cities(text: str) -> list[str]:
@@ -453,6 +465,7 @@ class ItineraryPlannerServer(A2AServer):
             travel_date = extract_travel_date(conversation)
             trip_days = extract_trip_days(conversation)
             date_note = ""
+            return_date = ""
             if detected_city and departure_city and not travel_date:
                 travel_date = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y-%m-%d")
                 date_note = "（未指定出行日期，已按今日查询）"
@@ -496,6 +509,17 @@ class ItineraryPlannerServer(A2AServer):
                 except Exception as e:
                     logger.warning(f"[Itinerary] 等待{name}结果超时或失败: {e}")
                     agent_results[name] = "暂不可用"
+            if return_date:
+                if _ticket_text_missing(agent_results.get("ticket", "")):
+                    agent_results["ticket"] = _mock_ticket_text(
+                        departure_city, detected_city, travel_date
+                    )
+                    logger.info("[Itinerary] 去程真实票源无数据，已补演示班次")
+                if _ticket_text_missing(agent_results.get("ticket_back", "")):
+                    agent_results["ticket_back"] = _mock_ticket_text(
+                        detected_city, departure_city, return_date
+                    )
+                    logger.info("[Itinerary] 返程真实票源无数据，已补演示班次")
             weather_info = agent_results["weather"]
             hotel_info = agent_results["hotel"]
             ticket_info = build_ticket_info(

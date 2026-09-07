@@ -6,11 +6,14 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import mysql.connector
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.api_server as api_server
 from backend.api_server import app
 from backend.auth import create_token
+from core.config import Config
 
 
 class _FakeA2AResult:
@@ -207,6 +210,29 @@ class _FakeChatService:
         self.last_session_id = session_id
         yield {"delta": "你好"}
         yield {"done": True, "session_id": session_id}
+
+
+def _api_db_available() -> bool:
+    conf = Config()
+    try:
+        conn = mysql.connector.connect(
+            host=conf.host,
+            user=conf.user,
+            password=conf.password,
+            database=conf.database,
+            port=conf.db_port,
+            connection_timeout=3,
+        )
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def test_api_db_ok_consumes_query_result_when_database_is_available():
+    if not _api_db_available():
+        pytest.skip("MySQL 不可用")
+    assert asyncio.run(api_server._db_ok()) is True
 
 
 if __name__ == "__main__":

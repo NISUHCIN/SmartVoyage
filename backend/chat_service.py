@@ -21,6 +21,13 @@ from langchain_openai import ChatOpenAI
 from python_a2a import A2AClient, AgentNetwork, Message, MessageRole, Task, TextContent
 
 from backend.auth import load_session_messages, save_message, session_exists
+from backend.session_memory import (
+    extract_memory_slots,
+    load_session_memory,
+    memory_chips,
+    save_session_memory,
+)
+from backend.trace_store import record_trace
 from core.config import Config
 from core.create_logger import logger
 from core.main_prompts import SmartVoyagePrompts
@@ -138,6 +145,19 @@ def _invoke_with_retry(chain, inputs, retries=3):
     raise last_error
 
 
+def _source_from_result(text: str) -> tuple[str, bool]:
+    """从 Agent 文本中识别数据来源与是否降级。"""
+    if not text:
+        return "空结果", True
+    if any(k in text for k in ("超时", "网络异常", "失败", "无法识别")):
+        return "异常/降级", True
+    if any(k in text for k in ("真实接口", "真实余票", "聚美智数", "极速数据", "和风天气")):
+        return "外部真实接口", False
+    if any(k in text for k in ("本地演示数据", "演示数据", "模拟", "暂不可用", "降级")):
+        return "本地/降级", True
+    return "A2A Agent", False
+
+
 class SmartVoyageChatService:
     """按 session 维护对话历史的旅行助手服务。"""
 
@@ -154,7 +174,35 @@ class SmartVoyageChatService:
         for name, url in AGENT_URLS.items():
             self.agent_network.add(name, A2AClient(url, timeout=AGENT_TIMEOUT))
         self._session_history: dict[str, str] = {}
+        self._session_memory: dict[str, dict] = {}
         self._lock = threading.Lock()
+
+    def _load_memory(self, session_id: str, persist: bool = False) -> dict:
+        if persist:
+            return load_session_memory(session_id)
+        with self._lock:
+            memory = getattr(self, "_session_memory", None)
+            if memory is None:
+                self._session_memory = {}
+                memory = self._session_memory
+            return dict(memory.get(session_id, {}))
+
+    def _store_memory(self, session_id: str, memory: dict, persist: bool = False) -> None:
+        if persist:
+            save_session_memory(session_id, memory)
+        with self._lock:
+            local_memory = getattr(self, "_session_memory", None)
+            if local_memory is None:
+                self._session_memory = {}
+                local_memory = self._session_memory
+            local_memory[session_id] = dict(memory)
+
+    def _update_memory(self, session_id: str, user_input: str, persist: bool = False) -> dict:
+        previous = self._load_memory(session_id, persist)
+        memory = extract_memory_slots(user_input, previous)
+        if memory != previous:
+            self._store_memory(session_id, memory, persist)
+        return memory
 
     def _history(self, session_id: str) -> str:
         return self._session_history.get(session_id, "")
@@ -306,6 +354,7 @@ class SmartVoyageChatService:
                 if routed_agents:
                     logger.info(f"路由到代理：{routed_agents}")
 
+            self._update_memory(session_id, user_input, persist)
             self._remember(session_id, user_input, response, user_id, intent_hint, agent_hint, persist)
             return response
 
@@ -336,9 +385,11 @@ class SmartVoyageChatService:
                              user_id: int = None, request_id: str = "") -> Any:
         """处理一条消息，逐段产出文本增量；适合 SSE 推送。"""
         session_id = session_id or "default"
+        stream_started = time.perf_counter()
         intent_hint = ""
         agent_hint = ""
         response_parts: list[str] = []
+        trace_steps: list[dict] = []
         persist = bool(user_id) or session_exists(session_id)
         history = _db_history_text(session_id) if persist else self._session_history.get(session_id, "")
 
@@ -350,11 +401,21 @@ class SmartVoyageChatService:
                 yield {"delta": piece}
 
         try:
+            intent_started = time.perf_counter()
             intents, user_queries, follow_up_message = await asyncio.to_thread(
                 self._intent_agent, user_input, session_id
             )
             intents = collapse_redundant_intents(intents)
             intent_hint = ",".join(intents)
+            trace_steps.append({
+                "step": "意图识别",
+                "agent": "LangChain/LLM",
+                "status": "ok",
+                "source": "意图分类模型",
+                "duration_ms": int((time.perf_counter() - intent_started) * 1000),
+                "degraded": False,
+                "detail": intent_hint,
+            })
 
             if "out_of_scope" in intents or follow_up_message:
                 response = follow_up_message or "暂不支持此意图。"
@@ -389,6 +450,7 @@ class SmartVoyageChatService:
                     message = Message(content=TextContent(text=message_text), role=MessageRole.USER)
                     task = Task(id="task-" + str(uuid.uuid4()), message=message.to_dict())
 
+                    agent_started = time.perf_counter()
                     try:
                         client_headers = {"X-Request-ID": request_id} if request_id else None
                         agent_client = A2AClient(
@@ -439,6 +501,18 @@ class SmartVoyageChatService:
                         logger.error(f"[{request_id or '-'}] 调用代理 {agent_name} 网络异常: {call_e}")
                         agent_result = f"调用代理服务网络异常：{str(call_e)}"
 
+                    agent_source, agent_degraded = _source_from_result(agent_result)
+                    trace_steps.append({
+                        "step": "Agent 路由与执行",
+                        "agent": agent_name,
+                        "intent": intent,
+                        "status": "error" if any(
+                            k in agent_result for k in ("失败", "超时", "网络异常")
+                        ) else "ok",
+                        "source": agent_source,
+                        "duration_ms": int((time.perf_counter() - agent_started) * 1000),
+                        "degraded": agent_degraded,
+                    })
                     routed_agents.append(agent_name)
                     if agent_name == "WeatherQueryAssistant":
                         chain = SmartVoyagePrompts.summarize_weather_prompt() | self.llm
@@ -459,20 +533,48 @@ class SmartVoyageChatService:
                 agent_hint = ",".join(routed_agents)
 
             response = "".join(response_parts).strip()
+            memory = await asyncio.to_thread(self._update_memory, session_id, user_input, persist)
             await asyncio.to_thread(
                 self._remember, session_id, user_input, response or "（未返回内容）",
                 user_id, intent_hint, agent_hint, persist
             )
-            yield {"done": True, "session_id": session_id}
+            record_trace(
+                kind="chat",
+                message=user_input,
+                session_id=session_id,
+                intents=[intent_hint] if intent_hint else [],
+                agents=[step.get("agent", "") for step in trace_steps if step.get("agent")],
+                steps=trace_steps,
+                status="ok" if not any(s.get("status") == "error" for s in trace_steps) else "warn",
+                duration_ms=int((time.perf_counter() - stream_started) * 1000),
+            )
+            yield {
+                "done": True,
+                "session_id": session_id,
+                "trace": {
+                    "intents": intent_hint,
+                    "steps": trace_steps,
+                    "duration_ms": int((time.perf_counter() - stream_started) * 1000),
+                },
+                "memory": memory,
+                "chips": memory_chips(memory),
+            }
         except Exception as e:
             logger.error(f"[{request_id or '-'}] 流式处理异常: {str(e)}")
             error_message = f"处理失败：{str(e)}。请重试。"
             yield {"delta": error_message}
+            memory = await asyncio.to_thread(self._update_memory, session_id, user_input, persist)
             await asyncio.to_thread(
                 self._remember, session_id, user_input, error_message,
                 user_id, intent_hint, agent_hint, persist
             )
-            yield {"done": True, "session_id": session_id}
+            yield {
+                "done": True,
+                "session_id": session_id,
+                "trace": {"intents": intent_hint, "steps": trace_steps},
+                "memory": memory,
+                "chips": memory_chips(memory),
+            }
 
     def agent_cards(self) -> list[dict]:
         return [
